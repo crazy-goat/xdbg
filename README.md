@@ -339,7 +339,7 @@ shell access.
 6. `xdbg_detach` or `xdbg_stop` — end the session and free port 9003
 7. `xdbg_container_disable` — turn Xdebug off (restore container performance)
 
-**CLI / Symfony command:**
+**CLI / Symfony command (manual launch):**
 
 1. `xdbg_container_status` — check Xdebug is enabled in the container
 2. `xdbg_container_enable` — turn it on if it's off
@@ -349,6 +349,16 @@ shell access.
 6. drive with `_run` / `_step_*` / `_stack` / `_context` / `_eval`
 7. `xdbg_detach` or `xdbg_stop` — end the session and free port 9003
 8. `xdbg_container_disable` — turn Xdebug off (restore container performance)
+
+**CLI / Symfony command (agent-driven):**
+
+1. `xdbg_container_status` — check Xdebug is enabled in the container
+2. `xdbg_container_enable` — turn it on if it's off
+3. `xdbg_set_breakpoint` …
+4. `xdbg_run_command` `{command:"bin/console app:my-command --option=value"}` → pauses at the breakpoint
+5. `xdbg_stack` / `_context` / `_eval` / `_step_*` / `_run` — inspect and step
+6. `xdbg_detach` or `xdbg_stop` — end the session and free port 9003
+7. `xdbg_container_disable` — turn Xdebug off (restore container performance)
 
 ## License
 
