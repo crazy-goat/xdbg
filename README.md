@@ -54,7 +54,22 @@ For the full request round-trip with step-by-step sequence, see the
 
 ## Install
 
-### From source (recommended)
+### `go install` (recommended — one line, no clone)
+
+```bash
+go install github.com/crazy-goat/xdbg@latest
+```
+
+This puts `xdbg` in `$(go env GOPATH)/bin` (default `~/go/bin`).
+Add it to your `PATH` (one-time):
+
+```bash
+export PATH="$(go env GOPATH)/bin:$PATH"   # add to ~/.zshrc / ~/.bashrc
+```
+
+Verify: `xdbg --help`.
+
+### From a local clone
 
 ```bash
 git clone https://github.com/crazy-goat/xdbg.git
@@ -62,28 +77,11 @@ cd xdbg
 make install          # builds and copies to ~/.local/bin/xdbg
 ```
 
-Make sure `~/.local/bin` is on your `PATH`:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"   # add to ~/.zshrc / ~/.bashrc
-```
-
-Verify:
-
-```bash
-xdbg --help
-```
-
-### Build without installing
-
-```bash
-make build            # -> ./xdbg
-./xdbg --help
-```
+(`make build` produces `./xdbg` without installing.)
 
 ### Prerequisites
 
-- Go 1.21+ (only needed for building from source)
+- Go 1.21+ (only needed for `go install` / `make`)
 - Docker (or any container runtime) running your PHP app
 - Xdebug installed **inside** the container (the engine), enabled on demand
 
