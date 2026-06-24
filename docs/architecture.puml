@@ -1,80 +1,93 @@
 @startuml xdbg-architecture
 
-left to right direction
-
 skinparam backgroundColor #FFFFFF
-skinparam shadowing false
-skinparam defaultFontName "Helvetica"
-skinparam defaultFontSize 13
-skinparam roundCorner 8
-skinparam ArrowColor #37474F
-skinparam ArrowFontColor #263238
-skinparam package {
-  BorderColor #607D8B
-  FontStyle bold
-  BackgroundColor #FAFAFA
-}
-skinparam rectangle {
-  BackgroundColor #E3F2FD
-  BorderColor #1565C0
-}
-skinparam database {
-  BackgroundColor #FFF3E0
-  BorderColor #E65100
-}
-skinparam interface {
-  BackgroundColor #ECEFF1
-  BorderColor #455A64
-}
+skinparam dpi 150
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
 
 title xdbg — HTTP request debugging flow
 
-' =================== LEFT: MCP client ===================
-package "MCP client" {
-  actor "Claude Code\n/ opencode / Cursor" as client
-}
+actor "AI agent\n(Claude Code / opencode)" as Agent
 
-' =================== MIDDLE: xdbg (host) ===================
-package "Host — xdbg (Go binary)" {
-  rectangle "MCP stdio\nJSON-RPC\nstdin/stdout" as io
-  rectangle "xdbg core\nDBGp state machine" as core
-  rectangle "DBGp listener\n0.0.0.0:9003" as listener
-  io -[hidden]down-> core
-  core -[hidden]down-> listener
-}
+box "Host — xdbg (Go binary, MCP stdio)" #E3F2FD
+participant MCP as "MCP stdio\n(JSON-RPC)"
+participant Core as "xdbg core\n(DBGp state machine)"
+participant Listener as "DBGp listener\n0.0.0.0:9003"
+end box
 
-' =================== RIGHT: Container ===================
-package "Container (PHP app)" {
-  rectangle "php-fpm\n:8080 (web)" as fpm
-  rectangle "PHP script\n(controller / command)" as script
-  rectangle "Xdebug engine\nstart_with_request=yes" as engine
-  fpm -[hidden]down-> script
-  script -[hidden]down-> engine
-}
+box "Container (PHP app)" #E8F5E9
+participant Fpm as "php-fpm\n:8080"
+participant Script as "PHP script\n(controller / command)"
+participant Xdebug as "Xdebug engine\nstart_with_request=yes"
+end box
 
-' =================== HTTP REQUEST FLOW (blue) ===================
-client --> io : "1  xdbg_request(url, method,\n    headers, body)"
-io --> core : "2  dispatch"
-core --> listener : "3  open :9003"
-core --> fpm : "4  fire HTTP request\n    POST /api/foo HTTP/1.1" #1565C0
-fpm --> script : "5  php-fpm executes\n    FooController::bar()"
-script --> engine : "6  Xdebug hooks fire"
-engine --> listener : "7  Xdebug dials out\n    host.docker.internal:9003" #E65100
-listener --> core : "8  adopt connection\n    apply breakpoints"
-core --> engine : "9  DBGp commands\n    breakpoint_set, step, eval" #E65100
+== Setup ==
 
-' =================== CLI COMMAND FLOW (green) ===================
-core --> script : "    xdbg_run_command\n    docker compose exec …\n    (same flow, steps 6-9)" #2E7D32
+Agent -> MCP: xdbg_container_enable()
+MCP -> Core: dispatch
+Core -> Xdebug: set-xdebug-on (shell)
+Xdebug --> Core: ok
 
-' =================== SIDE: Xdebug on/off ===================
-rectangle "xdbg_container_enable / _disable\n(--xdebug-*-cmd)" as toggle
-toggle --> engine : "turn on/off at runtime"
+Agent -> MCP: xdbg_set_breakpoint("src/FooController.php", 42)
+MCP -> Core: queue breakpoint
 
-legend right
-  |= color |= path |
-  | <color:#1565C0>━━</color> | HTTP request (xdbg → php-fpm) |
-  | <color:#E65100>━━</color> | DBGp connection (Xdebug → xdbg) |
-  | <color:#2E7D32>━━</color> | CLI command (xdbg_run_command) |
-endlegend
+== HTTP request ==
+
+Agent -> MCP: xdbg_request(url, method, headers, body)
+MCP -> Core: dispatch
+Core -> Listener: open :9003
+Core -> Fpm: fire HTTP request\nPOST /api/foo HTTP/1.1\n(method/headers/body)
+Fpm -> Script: execute FooController::bar()
+Script -> Xdebug: Xdebug hooks fire
+Xdebug -> Listener: dial out\nhost.docker.internal:9003
+Listener -> Core: adopt connection
+Core -> Xdebug: apply breakpoints\nbreakpoint_set FooController.php:42
+Core -> Xdebug: run
+Xdebug -> Core: break at FooController.php:42
+
+== Debug session ==
+
+Agent -> MCP: xdbg_stack()
+MCP -> Core: dispatch
+Core -> Xdebug: stack_get
+Xdebug --> Core: call stack (host paths)
+Core --> Agent: stack frames
+
+Agent -> MCP: xdbg_context(0)
+MCP -> Core: dispatch
+Core -> Xdebug: context_get -d 0
+Xdebug --> Core: variables in scope
+Core --> Agent: $user, $request, ...
+
+Agent -> MCP: xdbg_eval("$user->getId()")
+MCP -> Core: dispatch
+Core -> Xdebug: eval (base64)
+Xdebug --> Core: result
+Core --> Agent: 12345
+
+Agent -> MCP: xdbg_step_over()
+MCP -> Core: dispatch
+Core -> Xdebug: step_over
+Xdebug --> Core: break at next line
+Core --> Agent: state=break location=FooController.php:43
+
+Agent -> MCP: xdbg_run()
+MCP -> Core: dispatch
+Core -> Xdebug: run
+Xdebug --> Core: stopping (script finished)
+Core --> Agent: script finished
+
+== Cleanup ==
+
+Agent -> MCP: xdbg_detach()
+MCP -> Core: dispatch
+Core -> Xdebug: detach
+Core -> Listener: close :9003
+Core --> Agent: detached
+
+Agent -> MCP: xdbg_container_disable()
+MCP -> Core: dispatch
+Core -> Xdebug: set-xdebug-off (shell)
+Xdebug --> Core: ok
 
 @enduml
