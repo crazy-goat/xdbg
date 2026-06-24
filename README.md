@@ -104,7 +104,7 @@ project's `opencode.json`):
       "enabled": true,
       "type": "local",
       "command": [
-        "xdbg",
+        "xdbg", "mcp",
         "--dbg-port", "9003",
         "--local-root",  "/Users/you/work/your-app",
         "--docker-root", "/var/www/your-app",
@@ -130,6 +130,7 @@ Drop a `.mcp.json` in your project root (or `~/.claude.json` for global):
     "xdbg": {
       "command": "xdbg",
       "args": [
+        "mcp",
         "--dbg-port", "9003",
         "--local-root",  "/Users/you/work/your-app",
         "--docker-root", "/var/www/your-app",

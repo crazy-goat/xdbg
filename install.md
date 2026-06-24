@@ -81,7 +81,7 @@ project-level `opencode.json`):
       "enabled": true,
       "type": "local",
       "command": [
-        "xdbg",
+        "xdbg", "mcp",
         "--dbg-port", "9003",
         "--local-root",  "/absolute/path/to/your/project/on/host",
         "--docker-root", "/var/www/your-project",
@@ -107,6 +107,7 @@ Create or edit `.mcp.json` in your project root (or `~/.claude.json` for global)
     "xdbg": {
       "command": "xdbg",
       "args": [
+        "mcp",
         "--dbg-port", "9003",
         "--local-root",  "/absolute/path/to/your/project/on/host",
         "--docker-root", "/var/www/your-project",
