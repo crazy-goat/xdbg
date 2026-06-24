@@ -33,6 +33,7 @@ plus CLI/Symfony command debugging and host↔container path translation.
 | **CLI / Symfony commands** | No MCP path at all | `xdbg_run_command "bin/console app:foo"` pauses at the breakpoint |
 | **Host ↔ container paths** | Breakpoints need container paths; stacks show container paths | Set breakpoints with host paths; stacks come back as host paths |
 | **Port conflicts** | Two debuggers fight over 9003 | Detects the holder (lsof), waits its turn, tells you who's blocking |
+| **Port 9003 always busy** | Debugger holds the port all session | Binds only during a tool call (`xdbg_request`, `xdbg_run_command`, `xdbg_listen`); releases immediately after — PhpStorm, browser Xdebug, and other tools work freely between calls |
 
 ## How it works (30-second version)
 
@@ -44,6 +45,9 @@ plus CLI/Symfony command debugging and host↔container path translation.
 3. The MCP server is one long-lived process, so the session survives across
    tool calls. Your agent sets a breakpoint, fires the request, inspects
    variables, steps — all in one conversation.
+4. The DBGp port is **ephemeral** — bound only during a tool call and released
+   immediately after. Between calls, port 9003 is free for PhpStorm, browser
+   Xdebug, or any other debugger.
 
 ![overview](docs/xdbg-overview.svg)
 
