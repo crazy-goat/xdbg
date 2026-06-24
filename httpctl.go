@@ -26,6 +26,7 @@ func serveHTTP(s *session, addr string) {
 		reply(w, out, err)
 	})
 	mux.HandleFunc("/bp/list", func(w http.ResponseWriter, _ *http.Request) { out, err := s.BreakpointList(); reply(w, out, err) })
+	mux.HandleFunc("/bp/clear", func(w http.ResponseWriter, _ *http.Request) { out, err := s.BreakpointClearAll(); reply(w, out, err) })
 	mux.HandleFunc("/run", func(w http.ResponseWriter, _ *http.Request) { out, err := s.step("run"); reply(w, out, err) })
 	mux.HandleFunc("/into", func(w http.ResponseWriter, _ *http.Request) { out, err := s.step("step_into"); reply(w, out, err) })
 	mux.HandleFunc("/over", func(w http.ResponseWriter, _ *http.Request) { out, err := s.step("step_over"); reply(w, out, err) })
@@ -42,6 +43,14 @@ func serveHTTP(s *session, addr string) {
 		reply(w, out, err)
 	})
 	mux.HandleFunc("/detach", func(w http.ResponseWriter, _ *http.Request) { out, err := s.Detach(); reply(w, out, err) })
+	mux.HandleFunc("/cmd", func(w http.ResponseWriter, r *http.Request) {
+		t, _ := strconv.Atoi(r.URL.Query().Get("timeout"))
+		if t == 0 {
+			t = 30000
+		}
+		out, err := s.RunCommand(r.URL.Query().Get("command"), time.Duration(t)*time.Millisecond)
+		reply(w, out, err)
+	})
 	mux.HandleFunc("/raw", func(w http.ResponseWriter, r *http.Request) { out, err := s.Raw(r.URL.Query().Get("cmd")); reply(w, out, err) })
 
 	log.Printf("HTTP control API on http://%s", addr)

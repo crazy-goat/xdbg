@@ -26,8 +26,16 @@ Registered in repo-root `.mcp.json` as the stdio server `xdbg`; tools appear as
 `mcp__xdbg__docker_xdebug_*`. After changing `.mcp.json` or rebuilding, reconnect
 MCP in the client.
 
-Config (flags in `.mcp.json`): `-dbg-port` (DBGp listen port, default 9003),
-`-local-root`, `-docker-root` (for path translation).
+Config (flags in `.mcp.json`): `--dbg-port` (DBGp listen port, default 9003),
+`--local-root`, `--docker-root` (for path translation).
+
+Shell completion:
+
+```bash
+xdbg completion zsh > ~/.zsh/completions/_xdbg   # zsh
+xdbg completion bash > /etc/bash_completion.d/xdbg  # bash
+xdbg completion fish > ~/.config/fish/completions/xdbg.fish  # fish
+```
 
 ## Prerequisite
 
@@ -75,7 +83,7 @@ Also free port 9003: don't run alongside `socat` or PhpStorm's IDE listener.
 A curl control API for manual use:
 
 ```bash
-make xdbg          # xdbg -mcp=false -http 127.0.0.1:9010
+make xdbg          # xdbg --mcp=false --http 127.0.0.1:9010
 curl 'localhost:9010/bp?file=public/index.php&line=8'
 curl 'localhost:9010/request?url=http://127.0.0.1:8090/&method=POST&body={...}'
 curl localhost:9010/stack ; curl 'localhost:9010/eval?expr=$x' ; curl localhost:9010/run
@@ -83,9 +91,9 @@ curl localhost:9010/stack ; curl 'localhost:9010/eval?expr=$x' ; curl localhost:
 
 ## Files
 
-`main.go` (flags/wire-up), `session.go` (listener, adopt, commands, path xlat),
+`main.go` (cobra CLI/wire-up), `session.go` (listener, adopt, commands, path xlat),
 `dbgp.go` (wire framing + XML/base64 decode), `httpreq.go` (request firing),
-`mcp.go` (JSON-RPC stdio), `httpctl.go` (standalone control API). Stdlib only.
+`mcp.go` (JSON-RPC stdio), `httpctl.go` (standalone control API).
 
 Note: DBGp XML declares `iso-8859-1`; parsed with a permissive `CharsetReader`
 (values are ASCII/base64).

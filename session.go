@@ -3,13 +3,16 @@ package main
 import (
 	"bufio"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -30,8 +33,18 @@ type session struct {
 	pending []bp
 	ready   chan struct{} // closed on each adopt; lets ListenWait/DoRequest await a connection
 
+	dbgAddr string       // "host:port" where Xdebug connects (e.g. "0.0.0.0:9003")
+	ln      net.Listener // non-nil only while the ephemeral listener is open
+
 	localRoot  string
 	dockerRoot string
+
+	enableCmd  string // shell command to enable Xdebug in the container
+	disableCmd string
+	statusCmd  string
+	projectDir string // working directory for the above commands
+
+	containerExec string // prefix for running commands in the container, e.g. "docker compose exec -T php-sub-api"
 }
 
 func newSession(localRoot, dockerRoot string) *session {
@@ -43,23 +56,125 @@ func newSession(localRoot, dockerRoot string) *session {
 	}
 }
 
-func (s *session) listen(addr string) error {
-	ln, err := net.Listen("tcp", addr)
+// openOnce opens the DBGp port, accepts exactly one Xdebug connection, calls
+// adopt(), then closes the port. The port is closed whether the session ends
+// cleanly or times out, so browser/curl requests can never accidentally connect
+// to a debug session that is no longer active.
+//
+// If the port is already in use, acquireListener waits up to portWait for it to
+// become free. This lets multiple MCP instances coexist — one debugs while the
+// other waits for its turn.
+func (s *session) openOnce(timeout, portWait time.Duration) error {
+	ln, err := s.acquireListener(portWait)
 	if err != nil {
 		return err
 	}
-	log.Printf("DBGp listener on %s (local=%s docker=%s)", addr, s.localRoot, s.dockerRoot)
+	s.mu.Lock()
+	s.ln = ln
+	s.mu.Unlock()
+	log.Printf("DBGp listener open %s (local=%s docker=%s)", s.dbgAddr, s.localRoot, s.dockerRoot)
+
 	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				log.Printf("accept: %v", err)
-				continue
+		defer func() {
+			ln.Close()
+			s.mu.Lock()
+			if s.ln == ln {
+				s.ln = nil
 			}
-			s.adopt(conn)
+			s.mu.Unlock()
+			log.Printf("DBGp listener closed")
+		}()
+		ln.(*net.TCPListener).SetDeadline(time.Now().Add(timeout))
+		conn, err := ln.Accept()
+		if err != nil {
+			return // timeout or closeLn() called
 		}
+		s.adopt(conn)
 	}()
 	return nil
+}
+
+// acquireListener tries to open the DBGp port. If our own listener is already
+// open, it tells the caller to finish/stop the existing session. If another
+// process holds the port, it polls every 200ms for up to portWait, then reports
+// who is holding it (via lsof when available).
+func (s *session) acquireListener(portWait time.Duration) (net.Listener, error) {
+	s.mu.Lock()
+	if s.ln != nil || s.conn != nil {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("debug session already active — call docker_xdebug_detach or docker_xdebug_stop first")
+	}
+	s.mu.Unlock()
+
+	deadline := time.Now().Add(portWait)
+	for {
+		// On macOS Go sets SO_REUSEADDR, so net.Listen succeeds even when
+		// another process is already listening on the same port — we'd open a
+		// "ghost" listener that never receives connections. Probe with lsof
+		// first so we detect the conflict and wait for the port to actually be
+		// free.
+		if holder := portHolder(s.dbgAddr); holder != "" {
+			if time.Now().After(deadline) {
+				return nil, fmt.Errorf("xdebug port %s is busy (held by: %s) — another debugger is using it; wait for it to finish or stop that session", s.dbgAddr, holder)
+			}
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		ln, err := net.Listen("tcp", s.dbgAddr)
+		if err == nil {
+			return ln, nil
+		}
+		if !isAddrInUse(err) {
+			return nil, fmt.Errorf("listen %s: %w", s.dbgAddr, err)
+		}
+		if time.Now().After(deadline) {
+			holder := portHolder(s.dbgAddr)
+			if holder != "" {
+				return nil, fmt.Errorf("xdebug port %s is busy (held by: %s) — another debugger is using it; wait for it to finish or stop that session", s.dbgAddr, holder)
+			}
+			return nil, fmt.Errorf("xdebug port %s is busy — another debugger may be using it; wait for it to finish or stop that session", s.dbgAddr)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// isAddrInUse reports whether err is an "address already in use" listen error.
+func isAddrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	return strings.Contains(err.Error(), "address already in use")
+}
+
+// portHolder uses lsof to identify the process listening on addr (host:port).
+// Returns a human-readable string (COMMAND PID USER) or "" if unavailable.
+func portHolder(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	out, err := exec.Command("lsof", "-nP", "-iTCP:"+port, "-sTCP:LISTEN").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines[1:] { // skip header
+		fields := strings.Fields(line)
+		if len(fields) >= 3 {
+			return fmt.Sprintf("%s (pid=%s user=%s)", fields[0], fields[1], fields[2])
+		}
+	}
+	return ""
+}
+
+// closeLn closes the active listener immediately (e.g. on caller timeout).
+func (s *session) closeLn() {
+	s.mu.Lock()
+	if s.ln != nil {
+		s.ln.Close()
+		s.ln = nil
+	}
+	s.mu.Unlock()
 }
 
 // adopt takes over a freshly accepted engine connection: reads <init>, sets
@@ -95,6 +210,23 @@ func (s *session) adopt(conn net.Conn) {
 		if r, _, err := s.rawLocked("breakpoint_set", fmt.Sprintf("-t line -f %s -n %d", fileURI(s.pending[i].file), s.pending[i].line)); err == nil && r != nil {
 			s.pending[i].id = r.ID
 		}
+	}
+
+	// No breakpoints: run the script to completion and finalize the session so
+	// the request isn't left blocked. After `run` the engine reaches "stopping"
+	// (script done) and waits for one more command before it tears down and
+	// releases the connection — send `stop` to let the request return. This also
+	// unblocks external requests (browser, curl) that no one drives explicitly.
+	if len(s.pending) == 0 {
+		r, _, _ := s.rawLocked("run", "")
+		if r != nil && r.Status == "stopping" {
+			s.rawLocked("stop", "")
+		}
+		if s.conn != nil {
+			s.conn.Close()
+			s.conn = nil
+		}
+		s.state = "no session"
 	}
 
 	close(s.ready)
@@ -260,6 +392,22 @@ func (s *session) BreakpointRemove(id string) (string, error) {
 	return "removed " + id, nil
 }
 
+// BreakpointClearAll removes every breakpoint: queued (not yet applied) and
+// applied (active in the engine). Safe to call with or without an active session.
+func (s *session) BreakpointClearAll() (string, error) {
+	s.mu.Lock()
+	pending := s.pending
+	s.pending = nil
+	s.mu.Unlock()
+	// If a session is active, tell the engine to drop each applied breakpoint.
+	for _, p := range pending {
+		if p.id != "" {
+			s.cmd("breakpoint_remove", "-d "+p.id)
+		}
+	}
+	return fmt.Sprintf("cleared %d breakpoint(s)", len(pending)), nil
+}
+
 // step runs run/step_into/step_over/step_out/break and reports the new location.
 func (s *session) step(cmd string) (string, error) {
 	r, _, err := s.cmd(cmd, "")
@@ -375,15 +523,127 @@ func (s *session) Raw(cmd string) (string, error) {
 	return xmlStr, err
 }
 
-// ListenWait blocks until the next engine connection is adopted, or timeout.
+// XdebugEnable/Disable/ContainerStatus run the user-supplied shell commands.
+
+func (s *session) XdebugEnable() (string, error)          { return s.runShell(s.enableCmd) }
+func (s *session) XdebugDisable() (string, error)         { return s.runShell(s.disableCmd) }
+func (s *session) XdebugContainerStatus() (string, error) { return s.runShell(s.statusCmd) }
+
+func (s *session) runShell(cmd string) (string, error) {
+	if cmd == "" {
+		return "", fmt.Errorf("command not configured (pass the relevant --xdebug-*-cmd flag)")
+	}
+	c := exec.Command("sh", "-c", cmd)
+	c.Dir = s.projectDir
+	out, err := c.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", text, err)
+	}
+	return text, nil
+}
+
+// ListenWait opens the DBGp port, blocks until the next engine connection is
+// adopted, then closes the port. Use for CLI/Symfony commands launched separately.
 func (s *session) ListenWait(timeout time.Duration) (string, error) {
 	s.mu.Lock()
 	ready := s.ready
 	s.mu.Unlock()
+
+	if err := s.openOnce(timeout, 10*time.Second); err != nil {
+		return "", err
+	}
+
 	select {
 	case <-ready:
 		return s.Status(), nil
 	case <-time.After(timeout):
+		s.closeLn()
 		return "", fmt.Errorf("no engine connected within %s", timeout)
+	}
+}
+
+// ListenFireForget opens the DBGp port and returns immediately — the listener
+// stays open and the next Xdebug connection will be adopted. Use when the
+// caller wants to arm the listener and then trigger the command separately
+// (e.g. via run_command) without blocking on listen. Check docker_xdebug_status
+// later to see if a session was adopted.
+func (s *session) ListenFireForget() (string, error) {
+	// We don't know the accept timeout here — use a long default (1h) so the
+	// listener stays open. It'll be closed when adopt() runs.
+	if err := s.openOnce(time.Hour, 10*time.Second); err != nil {
+		return "", err
+	}
+	return "listener armed (fire-and-forget); check docker_xdebug_status to see if a session was adopted", nil
+}
+
+// RunCommand executes a command inside the container (e.g. a Symfony console
+// command) and waits for the resulting Xdebug connection. Like doAndWait but
+// for CLI commands instead of HTTP requests. When no breakpoints are set, the
+// script runs to completion and the command output is returned. When
+// breakpoints are set, the session pauses and the caller drives it with
+// run/step — the command output is not available until the script finishes.
+func (s *session) RunCommand(command string, timeout time.Duration) (string, error) {
+	if command == "" {
+		return "", fmt.Errorf("command required")
+	}
+	if s.containerExec == "" {
+		return "", fmt.Errorf("container-exec not configured (pass --container-exec flag)")
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	s.mu.Lock()
+	ready := s.ready
+	s.mu.Unlock()
+
+	if err := s.openOnce(timeout, 10*time.Second); err != nil {
+		return "", err
+	}
+
+	type cmdResult struct {
+		out string
+		err error
+	}
+	resultCh := make(chan cmdResult, 1)
+
+	go func() {
+		fullCmd := s.containerExec + " " + command
+		c := exec.Command("sh", "-c", fullCmd)
+		c.Dir = s.projectDir
+		out, err := c.CombinedOutput()
+		resultCh <- cmdResult{strings.TrimSpace(string(out)), err}
+		if err != nil {
+			log.Printf("command error: %v", err)
+		} else {
+			log.Printf("command completed: %s", command)
+		}
+	}()
+
+	select {
+	case <-ready:
+		s.mu.Lock()
+		state := s.state
+		s.mu.Unlock()
+		if state == "stopping" || state == "no session" {
+			// Script ran to completion — collect command output.
+			select {
+			case r := <-resultCh:
+				if r.err != nil {
+					return r.out, fmt.Errorf("%s: %w", r.out, r.err)
+				}
+				if r.out != "" {
+					return r.out, nil
+				}
+				return "command completed", nil
+			case <-time.After(5 * time.Second):
+				return "script ran to completion (command output not captured in time)", nil
+			}
+		}
+		return "command fired; session paused at script start — call run/step to drive", nil
+	case <-time.After(timeout):
+		s.closeLn()
+		return "", fmt.Errorf("no Xdebug connection within %s — is Xdebug enabled in the container? (docker compose exec php-sub-api xdebug 1)", timeout)
 	}
 }
