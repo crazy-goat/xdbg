@@ -9,10 +9,11 @@ any MCP-aware agent, and the agent debugs it for you: sets the breakpoint,
 fires the real request, reads the stack, inspects variables, steps, evals,
 proposes a fix. That's xdbg.
 
-**xdbg is a single Go binary that *is* the Xdebug client.** It accepts the
-container's DBGp connection and exposes the debugger as MCP tools, so any AI
-agent that speaks MCP can drive a real PHP debugging session — breakpoints,
-stack, variables, eval, stepping — against code running in a Docker container.
+**xdbg is an MCP server that connects to Xdebug running in a Docker container
+and exposes it as tools** — so any AI agent that speaks MCP (Claude Code,
+opencode, Cursor) can fire HTTP requests (`curl`-style) and run CLI commands
+inside the container, then drive the resulting debug session: breakpoints,
+stack, variables, eval, stepping. All from the chat.
 
 > Why not PhpStorm's own MCP tools? They only fire **GET** requests and don't
 > let you set **headers** (cookies, auth tokens, `Content-Type`). For real API
