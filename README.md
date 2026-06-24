@@ -132,7 +132,7 @@ project's `opencode.json`):
 }
 ```
 
-Restart opencode (or reconnect MCP). Tools appear as `xdbg_xdbg_*`.
+Restart opencode (or reconnect MCP). Tools appear as `xdbg_*`.
 
 ### Claude Code (`.mcp.json`)
 
@@ -158,7 +158,7 @@ Drop a `.mcp.json` in your project root (or `~/.claude.json` for global):
 }
 ```
 
-Reconnect MCP in Claude Code. Tools appear as `mcp__xdbg__xdbg_*`.
+Reconnect MCP in Claude Code. Tools appear as `mcp__xdbg__*`.
 
 ### Flags reference
 
