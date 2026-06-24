@@ -156,7 +156,7 @@ Reconnect MCP in Claude Code. Tools appear as `mcp__xdbg__xdbg_*`.
 | `--xdebug-disable-cmd` | — | Shell command to disable Xdebug in the container |
 | `--xdebug-status-cmd` | — | Shell command to check Xdebug status in the container |
 | `--container-exec` | `docker compose exec -T php` | Prefix for running CLI commands inside the container |
-| `--mcp` | `true` | Run as MCP stdio server (stdout = JSON-RPC channel) |
+
 
 ### Let the agent toggle Xdebug for you
 
