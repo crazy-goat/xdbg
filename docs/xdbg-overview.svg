@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1340 780" font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" fill="#1A1A1A">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1340 800" font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" fill="#1A1A1A">
   <defs>
     <marker id="arrow-solid" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0,0 L10,5 L0,10 z" fill="#37474F"/>
@@ -82,30 +82,33 @@
           fill="#E8F3FF" stroke="#3B7DD8" stroke-width="1.5"/>
     <text x="1120" y="92" text-anchor="middle" font-weight="700" font-size="15" fill="#0D47A1">Docker container</text>
 
-    <!-- xdebug -->
-    <g id="xdebug">
-      <rect x="940" y="170" width="360" height="100" rx="8" ry="8"
-            fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
-      <text x="1120" y="208" text-anchor="middle" font-weight="600" font-size="14">Xdebug engine</text>
-      <text x="1120" y="230" text-anchor="middle" font-size="11" fill="#455A64">start_with_request=yes</text>
-      <text x="1120" y="248" text-anchor="middle" font-size="11" fill="#455A64">client_host=host.docker.internal</text>
-    </g>
+  <!-- php-fpm (top-left) -->
+  <g id="fpm">
+    <rect x="940" y="140" width="180" height="100" rx="8" ry="8"
+          fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
+    <text x="1030" y="178" text-anchor="middle" font-weight="600" font-size="14">php-fpm</text>
+    <text x="1030" y="202" text-anchor="middle" font-size="11" fill="#455A64">web entrypoint</text>
+    <text x="1030" y="222" text-anchor="middle" font-size="11" fill="#455A64">(HTTP from xdbg)</text>
+  </g>
 
-    <!-- app -->
-    <g id="app">
-      <rect x="940" y="370" width="360" height="80" rx="8" ry="8"
-            fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
-      <text x="1120" y="408" text-anchor="middle" font-weight="600" font-size="14">PHP app</text>
-      <text x="1120" y="430" text-anchor="middle" font-size="11" fill="#455A64">controllers, console commands</text>
-    </g>
+  <!-- php app (top-right) -->
+  <g id="app">
+    <rect x="1140" y="140" width="180" height="100" rx="8" ry="8"
+          fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
+    <text x="1230" y="178" text-anchor="middle" font-weight="600" font-size="14">PHP app</text>
+    <text x="1230" y="202" text-anchor="middle" font-size="11" fill="#455A64">controllers, console</text>
+    <text x="1230" y="222" text-anchor="middle" font-size="11" fill="#455A64">commands (run_command)</text>
+  </g>
 
-    <!-- fpm -->
-    <g id="fpm">
-      <rect x="940" y="560" width="360" height="80" rx="8" ry="8"
-            fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
-      <text x="1120" y="598" text-anchor="middle" font-weight="600" font-size="14">php-fpm</text>
-      <text x="1120" y="620" text-anchor="middle" font-size="11" fill="#455A64">web entrypoint</text>
-    </g>
+  <!-- xdebug engine (bottom-center, aligned horizontally with DBGp listener) -->
+  <g id="xdebug">
+    <rect x="970" y="595" width="320" height="120" rx="8" ry="8"
+          fill="#FFFFFF" stroke="#3B7DD8" stroke-width="1.5"/>
+    <text x="1130" y="637" text-anchor="middle" font-weight="700" font-size="14" fill="#0D47A1">Xdebug engine</text>
+    <text x="1130" y="661" text-anchor="middle" font-size="11" fill="#455A64">start_with_request=yes</text>
+    <text x="1130" y="677" text-anchor="middle" font-size="11" fill="#455A64">client_host=host.docker.internal</text>
+    <text x="1130" y="703" text-anchor="middle" font-size="10" fill="#0D47A1" font-style="italic">dials host:9003 on every request</text>
+  </g>
   </g>
 
   <!-- =========================================================
@@ -128,37 +131,51 @@
   <!-- =========================================================
        WITHIN-CONTAINER arrows (solid)
        ========================================================= -->
-  <!-- xdebug → app -->
-  <line x1="1120" y1="270" x2="1120" y2="365" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
-  <text x="1132" y="320" font-size="11" fill="#263238">Xdebug</text>
-  <text x="1132" y="334" font-size="11" fill="#263238">hooks fire</text>
+  <!-- fpm → xdebug  -->
+  <line x1="1030" y1="240" x2="1030" y2="590" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
+  <text x="950" y="420" font-size="10" fill="#263238">runs script</text>
+  <text x="950" y="434" font-size="10" fill="#263238">→ hooks fire</text>
 
-  <!-- app → fpm -->
-  <line x1="1120" y1="450" x2="1120" y2="555" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
-  <text x="1132" y="500" font-size="11" fill="#263238">execute</text>
-  <text x="1132" y="514" font-size="11" fill="#263238">script</text>
+  <!-- app → xdebug -->
+  <line x1="1230" y1="240" x2="1230" y2="590" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
+  <text x="1240" y="420" font-size="10" fill="#263238">executes</text>
+  <text x="1240" y="434" font-size="10" fill="#263238">→ hooks fire</text>
 
   <!-- =========================================================
-       CROSS-CLUSTER arrows (dashed blue)
+       CROSS-CLUSTER arrows (dashed blue) — Manhattan / PCB routing
+       Each path: M start  H midX1  V y-target  H target
        ========================================================= -->
-  <!-- dbgp → fpm (fire HTTP) -->
-  <line x1="400" y1="475" x2="935" y2="600" stroke="#3B7DD8" stroke-width="1.5"
-        stroke-dasharray="6,4" marker-end="url(#arrow-dashed)"/>
-  <text x="670" y="510" text-anchor="middle" font-size="11" fill="#0D47A1" font-weight="600">fire HTTP request</text>
-  <text x="670" y="524" text-anchor="middle" font-size="10" fill="#0D47A1">(method / headers / body)</text>
 
-  <!-- dbgp → app (run_command) -->
-  <line x1="400" y1="370" x2="935" y2="410" stroke="#3B7DD8" stroke-width="1.5"
+  <!-- dbgp → php-fpm (fire HTTP) -->
+  <path d="M 400 450 H 670 V 165 H 935" fill="none"
+        stroke="#3B7DD8" stroke-width="1.5"
         stroke-dasharray="6,4" marker-end="url(#arrow-dashed)"/>
-  <text x="670" y="342" text-anchor="middle" font-size="11" fill="#0D47A1" font-weight="600">run_command</text>
-  <text x="670" y="356" text-anchor="middle" font-size="10" fill="#0D47A1">(docker compose exec)</text>
+  <text x="670" y="430" text-anchor="middle" font-size="11" fill="#0D47A1" font-weight="600">fire HTTP request</text>
+  <text x="670" y="444" text-anchor="middle" font-size="10" fill="#0D47A1">(method / headers / body)</text>
 
-  <!-- listener ↔ xdebug (DBGp :9003) — main bridge -->
-  <line x1="420" y1="625" x2="935" y2="225" stroke="#3B7DD8" stroke-width="1.8"
+  <!-- dbgp → PHP app (run_command) — different midX to avoid overlap -->
+  <path d="M 400 400 H 820 V 165 H 1135" fill="none"
+        stroke="#3B7DD8" stroke-width="1.5"
         stroke-dasharray="6,4" marker-end="url(#arrow-dashed)"/>
-  <text x="678" y="445" text-anchor="middle" font-size="12" fill="#0D47A1" font-weight="700">DBGp over TCP :9003</text>
-  <text x="678" y="461" text-anchor="middle" font-size="10" fill="#0D47A1">xdbg sends: breakpoint_set, step, eval</text>
-  <text x="678" y="475" text-anchor="middle" font-size="10" fill="#0D47A1">Xdebug dials out on every request / command</text>
+  <text x="822" y="385" text-anchor="middle" font-size="11" fill="#0D47A1" font-weight="600">run_command</text>
+  <text x="822" y="399" text-anchor="middle" font-size="10" fill="#0D47A1">(docker compose exec)</text>
+
+  <!-- listener ↔ xdebug (DBGp :9003) — main bridge (orthogonal, now aligned horizontally) -->
+  <!-- ① Xdebug initiates — straight LEFT to listener, almost a single line -->
+  <path d="M 970 655 H 425" fill="none"
+        stroke="#3B7DD8" stroke-width="1.8"
+        stroke-dasharray="6,4" marker-end="url(#arrow-dashed)"/>
+  <text x="697" y="640" text-anchor="middle" font-size="12" fill="#0D47A1" font-weight="700">① DBGp over TCP :9003 — init</text>
+  <text x="697" y="676" text-anchor="middle" font-size="10" fill="#0D47A1">Xdebug dials host.docker.internal:9003</text>
+  <text x="697" y="690" text-anchor="middle" font-size="10" fill="#0D47A1">on every request / console command</text>
+
+  <!-- ② listener → xdebug (response tunnel) — drawn slightly below -->
+  <path d="M 425 678 H 970" fill="none"
+        stroke="#3B7DD8" stroke-width="1.8"
+        stroke-dasharray="6,4" marker-end="url(#arrow-dashed)"/>
+  <text x="697" y="724" text-anchor="middle" font-size="12" fill="#0D47A1" font-weight="700">② session commands (response tunnel)</text>
+  <text x="697" y="738" text-anchor="middle" font-size="10" fill="#0D47A1">xdbg → Xdebug: breakpoint_set, step,</text>
+  <text x="697" y="752" text-anchor="middle" font-size="10" fill="#0D47A1">eval, run, continue (over the same TCP :9003)</text>
 
   <!-- legend (bottom of host cluster) -->
   <g transform="translate(60, 710)">
