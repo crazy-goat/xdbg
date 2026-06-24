@@ -155,7 +155,6 @@ Reconnect MCP in Claude Code. Tools appear as `mcp__xdbg__xdbg_*`.
 | `--xdebug-status-cmd` | — | Shell command to check Xdebug status in the container |
 | `--container-exec` | `docker compose exec -T php` | Prefix for running CLI commands inside the container |
 | `--mcp` | `true` | Run as MCP stdio server (stdout = JSON-RPC channel) |
-| `--http` | — | Also serve a curl control API, e.g. `127.0.0.1:9010` |
 
 ### Enable Xdebug in the container
 
@@ -203,23 +202,11 @@ Keep port 9003 free — don't run alongside `socat` or PhpStorm's IDE listener.
 3. launch separately: `docker compose exec -T php php bin/console app:cmd`
 4. drive with `_run` / `_step_*` / `_stack` / `_context` / `_eval`
 
-## Standalone (no MCP client)
-
-A curl control API for manual use:
-
-```bash
-xdbg --mcp=false --http 127.0.0.1:9010
-curl 'localhost:9010/bp?file=public/index.php&line=8'
-curl 'localhost:9010/request?url=http://127.0.0.1:8090/&method=POST&body={...}'
-curl localhost:9010/stack ; curl 'localhost:9010/eval?expr=$x' ; curl localhost:9010/run
-```
-
 ## Files
 
 `main.go` (cobra CLI/wire-up), `session.go` (listener, adopt, commands, path
 translation), `dbgp.go` (wire framing + XML/base64 decode), `httpreq.go`
-(request firing), `mcp.go` (JSON-RPC stdio), `httpctl.go` (standalone control
-API).
+(request firing), `mcp.go` (JSON-RPC stdio).
 
 ## License
 

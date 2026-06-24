@@ -6,10 +6,6 @@
 // .mcp.json.
 //
 //	xdbg --dbg-port 9003 --local-root /Users/.../subscription-api --docker-root /var/www/subscription-api
-//
-// Secondary mode (no MCP client): a curl-driven HTTP control API.
-//
-//	xdbg --mcp=false --http 127.0.0.1:9010
 package main
 
 import (
@@ -27,7 +23,6 @@ func main() {
 		dbgPort          string
 		localRoot        string
 		dockerRoot       string
-		httpAddr         string
 		mcpMode          bool
 		xdebugEnableCmd  string
 		xdebugDisableCmd string
@@ -37,7 +32,7 @@ func main() {
 
 	root := &cobra.Command{
 		Use:          "xdbg",
-		Short:        "Docker-aware Xdebug (DBGp) debugger — MCP server + HTTP control API",
+		Short:        "Docker-aware Xdebug (DBGp) debugger — MCP server",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s := newSession(localRoot, dockerRoot)
@@ -47,9 +42,6 @@ func main() {
 		s.statusCmd = xdebugStatusCmd
 		s.containerExec = containerExec
 		s.projectDir = localRoot
-			if httpAddr != "" {
-				go serveHTTP(s, httpAddr)
-			}
 			if mcpMode {
 				log.Printf("MCP stdio server ready (xdbg_*)")
 				newMCP(s).serve()
@@ -63,7 +55,6 @@ func main() {
 	f.StringVar(&dbgPort, "dbg-port", "9003", "DBGp listen port (where container Xdebug connects)")
 	f.StringVar(&localRoot, "local-root", "/Users/piotr.halas/work/subscription-api", "host project root")
 	f.StringVar(&dockerRoot, "docker-root", "/var/www/subscription-api", "container project root")
-	f.StringVar(&httpAddr, "http", "", "HTTP control API address, e.g. 127.0.0.1:9010")
 	f.BoolVar(&mcpMode, "mcp", true, "run as MCP stdio server (stdout = JSON-RPC channel)")
 	f.StringVar(&xdebugEnableCmd, "xdebug-enable-cmd", "", `shell command to enable Xdebug in the container, e.g. "docker compose exec -T php set-xdebug-on"`)
 	f.StringVar(&xdebugDisableCmd, "xdebug-disable-cmd", "", `shell command to disable Xdebug in the container`)

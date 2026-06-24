@@ -39,7 +39,6 @@ package "Host (developer machine)"  {
   rectangle "xdbg (Go binary)" as xdbg {
     port "stdin/stdout\nJSON-RPC 2.0\n(MCP stdio)" as io_stdio
     port "TCP :9003\nDBGp listener\n0.0.0.0 (ephemeral)" as io_listen
-    port "HTTP :9010\ncontrol API\n(optional, --http)" as io_http
     rectangle "mcp.go\nJSON-RPC dispatch" as m_mcp
     rectangle "session.go\nDBGp state machine\n(adopt / step / eval)" as m_sess
     rectangle "httpreq.go\nrequest firing" as m_req
@@ -93,7 +92,6 @@ m_sess --> exec : "7 docker_xdebug_run_command\nruns command in container"
 exec --> app : "8 php bin/console …\nXdebug hooks fire\n-> dial-out to :9003"
 
 ' =================== WIRING: side channels ===================
-io_http --> m_sess : "curl control API\n(standalone mode)"
 lsof --> io_listen : "probe :9003 before bind\n(wait if busy, report holder)"
 
 ' =================== WIRING: container Xdebug on/off ===================
