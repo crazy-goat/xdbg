@@ -1,4 +1,4 @@
-BIN := $(HOME)/.local/bin/xdbg
+BIN := $(HOME)/.local/bin/docker-xdebug-mcp
 
 .PHONY: build install xdbg-build
 
