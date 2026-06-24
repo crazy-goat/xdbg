@@ -1,1 +1,170 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" contentStyleType="text/css" data-diagram-type="DESCRIPTION" height="143px" preserveAspectRatio="none" style="width:1043px;height:143px;background:#FFFFFF;" version="1.1" viewBox="0 0 1043 143" width="1043px" zoomAndPan="magnify"><?plantuml 1.2026.4?><defs/><g><g class="title" data-source-line="25"><text fill="#000000" font-family="'Helvetica'" font-size="14" font-weight="700" lengthAdjust="spacing" textLength="115.1445" x="460.7944" y="20.7803">xdbg &#8212; overview</text></g><!--entity agent--><g class="entity" data-qualified-name="agent" data-source-line="27" id="ent0001"><ellipse cx="88.1099" cy="50.2197" fill="#ECEFF1" rx="8" ry="8" style="stroke:#455A64;stroke-width:0.5;"/><path d="M88.1099,58.2197 L88.1099,85.2197 M75.1099,66.2197 L101.1099,66.2197 M88.1099,85.2197 L75.1099,100.2197 M88.1099,85.2197 L101.1099,100.2197" fill="none" style="stroke:#455A64;stroke-width:0.5;"/><text fill="#000000" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="52.1514" x="6" y="112.5">AI agent</text><text fill="#000000" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="164.2197" x="6" y="126.5">(Claude Code / opencode)</text></g><!--entity xdbg--><g class="entity" data-qualified-name="xdbg" data-source-line="28" id="ent0002"><rect fill="#E3F2FD" height="62" rx="5" ry="5" style="stroke:#1565C0;stroke-width:0.5;" width="93.8965" x="456.22" y="54.7197"/><text fill="#000000" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="30.3584" x="466.22" y="75.5">xdbg</text><text fill="#000000" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="73.8965" x="466.22" y="89.5">MCP server</text><text fill="#000000" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="38.8965" x="466.22" y="103.5">(stdio)</text></g><!--entity xdebug--><g class="entity" data-qualified-name="xdebug" data-source-line="29" id="ent0003"><rect fill="#E3F2FD" height="62" rx="5" ry="5" style="stroke:#1565C0;stroke-width:0.5;" width="140.6133" x="889.12" y="54.7197"/><text fill="#000000" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="48.2686" x="899.12" y="75.5">Xdebug</text><text fill="#000000" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="93.3789" x="899.12" y="89.5">(DBGp engine)</text><text fill="#000000" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="120.6133" x="899.12" y="103.5">in Docker container</text></g><!--link agent to xdbg--><g class="link" data-entity-1="ent0001" data-entity-2="ent0002" data-link-type="dependency" data-source-line="31" id="lnk4"><path d="M170.72,85.7197 C256.06,85.7197 382,85.7197 450.98,85.7197" fill="none" id="agent-to-xdbg" style="stroke:#37474F;stroke-width:1;"/><polygon fill="#37474F" points="455.98,85.7197,446.98,81.7197,450.98,85.7197,446.98,89.7197,455.98,85.7197" style="stroke:#37474F;stroke-width:1;stroke-linejoin:miter;stroke-miterlimit:10;"/><text fill="#263238" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="64.5723" x="281.0056" y="53.5">MCP tools</text><text fill="#263238" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="224.1436" x="201.22" y="67.5">xdbg_request, xdbg_run_command,</text><text fill="#263238" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="223.3711" x="201.6062" y="81.5">xdbg_set_breakpoint, xdbg_eval, &#8230;</text></g><!--link xdbg to xdebug--><g class="link" data-entity-1="ent0002" data-entity-2="ent0003" data-link-type="dependency" data-source-line="32" id="lnk5"><path d="M555.22,85.7197 C635.18,85.7197 790.11,85.7197 884.01,85.7197" fill="none" id="xdbg-xdebug" style="stroke:#37474F;stroke-width:1;"/><polygon fill="#37474F" points="550.22,85.7197,559.22,89.7197,555.22,85.7197,559.22,81.7197,550.22,85.7197" style="stroke:#37474F;stroke-width:1;stroke-linejoin:miter;stroke-miterlimit:10;"/><polygon fill="#37474F" points="889.01,85.7197,880.01,81.7197,884.01,85.7197,880.01,89.7197,889.01,85.7197" style="stroke:#37474F;stroke-width:1;stroke-linejoin:miter;stroke-miterlimit:10;"/><text fill="#263238" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="140.0615" x="650.0057" y="53.5">DBGp over TCP :9003</text><text fill="#263238" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="238.9297" x="600.5717" y="67.5">xdbg sends: breakpoint_set, step, eval</text><text fill="#263238" font-family="'Helvetica'" font-size="14" lengthAdjust="spacing" textLength="277.833" x="581.12" y="81.5">Xdebug dials out on every request/command</text></g><?plantuml-src RPFTRjD048Nl_HGZSzDAgPh_b0WX9KuDN82Gu8ABID76Et5NsSoOtNLAGKWy1C_0W_4apCP6DQ6sPDbxpdvdPcnRt0K83CwKTm6qSLW4mvGaVc-eKauTOAkAVUcu9fsnPGVFyjFHSVWxfVdUK0axPJrs58qxLTkGCuLtwe2GlaPxn60AbJxj-c2-8Wp67R5DTeGE1lsEi72ExzkIHhFnR9oVYn7O6eRJqN1qqp5KqfKg4Rub04js6bthdFPdgvkbh9xA2GyMOSjMHzj_WrZ4C_dUhLRcfwYqBVXyn-qe7-QhyyZ1P3h9-lzmL154UPgHtURvu9mndamMqx4mac22n7_Hsn9-__W9V4HtD7YV90qpNRm1QPp2cYuogsgDaB5She4hf49kBrDGll4aZ_saaRYcjzbxy4949_jzq8ORUrIxxayQjxNuBrRBLnKWbORmSas6OCN5Njvb8UDLikZQxT4kDSPKkBfwsJGmXpG61cRhrnINDWu_r-X33vgdcZO57mwATAyrU0oRhKErhzZGNnyUbUt9F7wboGdyeec8eJ7aL6IS57oKkFdpVd_KqAHNqduEZy38xu4FMFKWKjVKj2e_Ztpym7K09b7GFK1RwtLROPhy0G00?></g></svg>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1340 780" font-family="-apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13" fill="#1A1A1A">
+  <defs>
+    <marker id="arrow-solid" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#37474F"/>
+    </marker>
+    <marker id="arrow-dashed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3B7DD8"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="670" y="34" text-anchor="middle" font-weight="700" font-size="18" fill="#1A1A1A">xdbg — overview</text>
+
+  <!-- =========================================================
+       HOST cluster (left)
+       ========================================================= -->
+  <g id="host">
+    <rect x="20" y="60" width="440" height="700" rx="12" ry="12"
+          fill="#FFF7E0" stroke="#C9A227" stroke-width="1.5"/>
+    <text x="240" y="92" text-anchor="middle" font-weight="700" font-size="15" fill="#7C5E0B">Host (developer machine)</text>
+
+    <!-- agent -->
+    <g id="agent">
+      <rect x="60" y="120" width="360" height="80" rx="8" ry="8"
+            fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
+      <text x="240" y="158" text-anchor="middle" font-weight="600" font-size="14">AI agent</text>
+      <text x="240" y="180" text-anchor="middle" font-size="11" fill="#455A64">Claude Code / opencode / Cursor</text>
+    </g>
+
+    <!-- xdbg (binary) -->
+    <g id="xdbg">
+      <rect x="60" y="240" width="360" height="330" rx="8" ry="8"
+            fill="#FFFFFF" stroke="#C9A227" stroke-width="1.5"/>
+      <text x="240" y="270" text-anchor="middle" font-weight="600" font-size="13" fill="#7C5E0B">xdbg — MCP stdio server (Go binary)</text>
+
+      <!-- mcp (left) -->
+      <g id="mcp">
+        <rect x="80" y="295" width="135" height="115" rx="6" ry="6"
+              fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
+        <text x="147" y="338" text-anchor="middle" font-weight="600" font-size="13">MCP layer</text>
+        <text x="147" y="362" text-anchor="middle" font-size="11" fill="#455A64">JSON-RPC</text>
+        <text x="147" y="378" text-anchor="middle" font-size="11" fill="#455A64">over</text>
+        <text x="147" y="394" text-anchor="middle" font-size="11" fill="#455A64">stdin/stdout</text>
+      </g>
+
+      <!-- dbgp (right) -->
+      <g id="dbgp">
+        <rect x="230" y="295" width="170" height="245" rx="6" ry="6"
+              fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
+        <text x="315" y="338" text-anchor="middle" font-weight="600" font-size="13">DBGp client</text>
+        <text x="315" y="362" text-anchor="middle" font-size="11" fill="#455A64">breakpoints,</text>
+        <text x="315" y="378" text-anchor="middle" font-size="11" fill="#455A64">step, eval</text>
+        <text x="315" y="394" text-anchor="middle" font-size="11" fill="#455A64">path</text>
+        <text x="315" y="410" text-anchor="middle" font-size="11" fill="#455A64">translation</text>
+        <text x="315" y="448" text-anchor="middle" font-size="10" fill="#7C5E0B" font-weight="600">
+          fires outbound →
+        </text>
+        <text x="315" y="462" text-anchor="middle" font-size="10" fill="#7C5E0B" font-weight="600">
+          HTTP · exec · DBGp
+        </text>
+        <text x="315" y="476" text-anchor="middle" font-size="10" fill="#7C5E0B" font-weight="600">
+          to container
+        </text>
+      </g>
+    </g>
+
+    <!-- listener -->
+    <g id="listener">
+      <rect x="60" y="610" width="360" height="80" rx="8" ry="8"
+            fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
+      <text x="240" y="648" text-anchor="middle" font-weight="600" font-size="14">DBGp listener</text>
+      <text x="240" y="670" text-anchor="middle" font-size="11" fill="#455A64">0.0.0.0:9003</text>
+    </g>
+  </g>
+
+  <!-- =========================================================
+       DOCKER CONTAINER cluster (right)
+       ========================================================= -->
+  <g id="container">
+    <rect x="900" y="60" width="440" height="700" rx="12" ry="12"
+          fill="#E8F3FF" stroke="#3B7DD8" stroke-width="1.5"/>
+    <text x="1120" y="92" text-anchor="middle" font-weight="700" font-size="15" fill="#0D47A1">Docker container</text>
+
+    <!-- xdebug -->
+    <g id="xdebug">
+      <rect x="940" y="170" width="360" height="100" rx="8" ry="8"
+            fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
+      <text x="1120" y="208" text-anchor="middle" font-weight="600" font-size="14">Xdebug engine</text>
+      <text x="1120" y="230" text-anchor="middle" font-size="11" fill="#455A64">start_with_request=yes</text>
+      <text x="1120" y="248" text-anchor="middle" font-size="11" fill="#455A64">client_host=host.docker.internal</text>
+    </g>
+
+    <!-- app -->
+    <g id="app">
+      <rect x="940" y="370" width="360" height="80" rx="8" ry="8"
+            fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
+      <text x="1120" y="408" text-anchor="middle" font-weight="600" font-size="14">PHP app</text>
+      <text x="1120" y="430" text-anchor="middle" font-size="11" fill="#455A64">controllers, console commands</text>
+    </g>
+
+    <!-- fpm -->
+    <g id="fpm">
+      <rect x="940" y="560" width="360" height="80" rx="8" ry="8"
+            fill="#FAFAFA" stroke="#607D8B" stroke-width="1"/>
+      <text x="1120" y="598" text-anchor="middle" font-weight="600" font-size="14">php-fpm</text>
+      <text x="1120" y="620" text-anchor="middle" font-size="11" fill="#455A64">web entrypoint</text>
+    </g>
+  </g>
+
+  <!-- =========================================================
+       WITHIN-HOST arrows (solid)
+       ========================================================= -->
+  <!-- agent → mcp -->
+  <line x1="147" y1="200" x2="147" y2="290" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
+  <text x="500" y="232" font-size="11" fill="#263238" font-weight="600">MCP tools:</text>
+  <text x="500" y="246" font-size="10" fill="#263238">xdbg_request, xdbg_run_command,</text>
+  <text x="500" y="260" font-size="10" fill="#263238">xdbg_set_breakpoint, xdbg_eval, …</text>
+
+  <!-- mcp → dbgp -->
+  <line x1="215" y1="350" x2="225" y2="350" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
+  <text x="220" y="338" text-anchor="middle" font-size="10" fill="#263238">dispatch</text>
+
+  <!-- dbgp → listener (open :9003) -->
+  <line x1="315" y1="540" x2="240" y2="605" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
+  <text x="500" y="595" font-size="11" fill="#263238" font-weight="600">opens :9003</text>
+
+  <!-- =========================================================
+       WITHIN-CONTAINER arrows (solid)
+       ========================================================= -->
+  <!-- xdebug → app -->
+  <line x1="1120" y1="270" x2="1120" y2="365" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
+  <text x="1132" y="320" font-size="11" fill="#263238">Xdebug</text>
+  <text x="1132" y="334" font-size="11" fill="#263238">hooks fire</text>
+
+  <!-- app → fpm -->
+  <line x1="1120" y1="450" x2="1120" y2="555" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
+  <text x="1132" y="500" font-size="11" fill="#263238">execute</text>
+  <text x="1132" y="514" font-size="11" fill="#263238">script</text>
+
+  <!-- =========================================================
+       CROSS-CLUSTER arrows (dashed blue)
+       ========================================================= -->
+  <!-- dbgp → fpm (fire HTTP) -->
+  <line x1="400" y1="475" x2="935" y2="600" stroke="#3B7DD8" stroke-width="1.5"
+        stroke-dasharray="6,4" marker-end="url(#arrow-dashed)"/>
+  <text x="670" y="510" text-anchor="middle" font-size="11" fill="#0D47A1" font-weight="600">fire HTTP request</text>
+  <text x="670" y="524" text-anchor="middle" font-size="10" fill="#0D47A1">(method / headers / body)</text>
+
+  <!-- dbgp → app (run_command) -->
+  <line x1="400" y1="370" x2="935" y2="410" stroke="#3B7DD8" stroke-width="1.5"
+        stroke-dasharray="6,4" marker-end="url(#arrow-dashed)"/>
+  <text x="670" y="342" text-anchor="middle" font-size="11" fill="#0D47A1" font-weight="600">run_command</text>
+  <text x="670" y="356" text-anchor="middle" font-size="10" fill="#0D47A1">(docker compose exec)</text>
+
+  <!-- listener ↔ xdebug (DBGp :9003) — main bridge -->
+  <line x1="420" y1="625" x2="935" y2="225" stroke="#3B7DD8" stroke-width="1.8"
+        stroke-dasharray="6,4" marker-end="url(#arrow-dashed)"/>
+  <text x="678" y="445" text-anchor="middle" font-size="12" fill="#0D47A1" font-weight="700">DBGp over TCP :9003</text>
+  <text x="678" y="461" text-anchor="middle" font-size="10" fill="#0D47A1">xdbg sends: breakpoint_set, step, eval</text>
+  <text x="678" y="475" text-anchor="middle" font-size="10" fill="#0D47A1">Xdebug dials out on every request / command</text>
+
+  <!-- legend (bottom of host cluster) -->
+  <g transform="translate(60, 710)">
+    <line x1="0" y1="0" x2="20" y2="0" stroke="#37474F" stroke-width="1.2" marker-end="url(#arrow-solid)"/>
+    <text x="28" y="4" font-size="10" fill="#37474F">in-cluster flow</text>
+    <line x1="170" y1="0" x2="190" y2="0" stroke="#3B7DD8" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow-dashed)"/>
+    <text x="198" y="4" font-size="10" fill="#0D47A1">cross-cluster traffic</text>
+  </g>
+</svg>

@@ -45,9 +45,10 @@ plus CLI/Symfony command debugging and host↔container path translation.
    tool calls. Your agent sets a breakpoint, fires the request, inspects
    variables, steps — all in one conversation.
 
-![overview](docs/overview.png)
+![overview](docs/xdbg-overview.svg)
 
-([source](docs/overview.mmd) — edit with Mermaid)
+(Hand-drawn SVG — edit `docs/xdbg-overview.svg` directly if you need
+to tweak layout.)
 
 For the full request round-trip with step-by-step sequence, see the
 [architecture diagram](docs/xdbg-architecture.svg) ([source](docs/architecture.puml)).
