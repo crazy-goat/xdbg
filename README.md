@@ -59,6 +59,16 @@ For the full request round-trip with step-by-step sequence, see the
 
 ## Install
 
+> **The fastest way:** paste this into your chat with Claude Code or opencode:
+>
+> ```
+> Install and configure this MCP server for me: https://raw.githubusercontent.com/crazy-goat/xdbg/main/install.md
+> ```
+>
+> The agent will read the guide and walk you through every step.
+>
+> Full guide: [install.md](install.md)
+
 ### `go install` (recommended — one line, no clone)
 
 ```bash
