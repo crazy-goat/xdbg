@@ -1,119 +1,218 @@
 ---
 name: xdebug-docker-debug
 description: |
-  Use when the user wants to debug PHP code running in Docker with Xdebug.
-  Covers: setting breakpoints, firing HTTP requests or CLI commands, stepping,
-  inspecting variables, evaluating expressions, and toggling Xdebug in the container.
+  Use when the user wants to debug PHP code running in Docker with Xdebug via xdbg.
+  Covers three debugging flows: HTTP requests, CLI commands (agent-driven), and
+  CLI commands (manual launch). Includes error recovery and decision guidance.
 ---
 
-# Xdebug Docker Debugging (xdbg)
+# Xdebug Docker Debugging — Agent Guide
 
-You are an expert PHP debugger. The project runs in Docker with Xdebug 3.x.
-An MCP server (`xdbg`) is registered and exposes debugging tools.
+This project uses **xdbg** (an MCP server) to debug PHP inside Docker. You
+have access to xdbg tools via MCP. Do not ask the user to run Docker commands
+manually unless the MCP tools fail — the agent can drive the entire session.
 
-## Preconditions — ALWAYS check first
+## Which flow to use? — Decision Tree
 
-Before any debug session:
-
-1. `xdbg_container_status` — is Xdebug enabled in the container?
-2. If not: `xdbg_container_enable`
-3. If you don't need container toggling, skip these steps.
-
-## Available Tools (names depend on MCP client)
-
-| Tool | Purpose |
+| User wants to debug... | Pick flow |
 |---|---|
-| `set_breakpoint` | Set a line breakpoint (host path, auto-translated) |
-| `breakpoint_list` | List active breakpoints |
-| `breakpoint_remove` | Remove one breakpoint by id |
-| `breakpoint_clear` | Remove all breakpoints |
-| `request` | Fire HTTP request (GET/POST/PUT/PATCH/DELETE) with headers/body |
-| `request_from_files` | Like `request` but reads headers/body from disk (secrets) |
-| `listen` | Arm listener for next engine connection (CLI debugging) |
-| `run_command` | Run CLI command inside container and debug it |
-| `run` | Resume until next breakpoint or end |
-| `step_into` | Step into function call |
-| `step_over` | Step over function call |
-| `step_out` | Step out of current function |
-| `pause` | Break immediately |
-| `stack` | Call stack with host paths |
-| `context` | Variables in scope at given stack depth |
-| `eval` | Evaluate PHP expression |
-| `property_get` | Get one variable/property value |
-| `property_set` | Set variable to a PHP literal |
-| `detach` | Let script finish, close session |
-| `stop` | Terminate script immediately |
-| `status` | Current state: no session / started / break / stopping |
+| An API endpoint, controller action, or web page hit by HTTP | **Flow 1: HTTP Request** |
+| A Symfony console command, worker, or cron job | **Flow 2: CLI via `run_command`** (preferred) |
+| A command that `run_command` can't reach (e.g. different container, special entrypoint) | **Flow 3: CLI via `listen` + manual launch** |
 
-## Core Debugging Workflows
+## Preconditions (all flows)
 
-### Web Request (HTTP)
+Always start with these checks. If container toggling is not configured, skip steps 1–2.
 
-When the user reports a bug in an API endpoint, controller, or service hit by HTTP:
+1. **`container_status`** — is Xdebug enabled in the container?
+2. If off: **`container_enable`**
+3. **`status`** — is there a stale session from a previous debug run?
+4. If stale: **`detach`** or **`stop`** to free port 9003.
 
-1. **Set breakpoints** — `set_breakpoint` with host path (e.g. `src/Controller/FooController.php:42`)
-2. **Fire request** — `request` with full URL, method, headers, body
-   - The tool returns once the engine hits a breakpoint
-3. **Inspect** — `stack`, `context`, `eval`
-4. **Step** — `step_over`, `step_into`, `step_out`, `run`
-5. **Finish** — `detach` (let finish) or `stop` (kill)
+> **Why this matters:** Xdebug in the container must have `xdebug.mode=debug` and `xdebug.start_with_request=yes` so the engine dials out to port 9003. If Xdebug is off, the request/command runs to completion with no debug connection.
 
-> If the request finishes without breaking, either:
-> - the breakpoint wasn't hit (wrong line, code not executed), or
-> - Xdebug is off in the container (`container_status`).
+---
 
-### CLI / Symfony Command
+## Flow 1: Debugging an HTTP Request (POST/GET/PUT/PATCH/DELETE)
 
-When the user wants to debug a console command or worker:
+Best for: API endpoints, controllers, middleware, event subscribers hit via HTTP.
 
-1. **Set breakpoints**
-2. **Option A — manual launch:**
-   - `listen` (arms listener, blocks until engine connects)
-   - User launches command separately (or you tell them to)
-   - Once `listen` returns, session is paused at script start
-3. **Option B — agent-driven:**
-   - `run_command` with the command string (e.g. `bin/console app:my-command --option=value`)
-   - The tool arms listener, runs command, waits for connection
-4. **Inspect and step** — same as web flow
-5. **Finish** — `detach` or `stop`
+### Example — POST endpoint with auth header
 
-### Evaluating PHP in Context
+User says: *"The `/api/orders` endpoint returns 500 when I send a JSON payload. I suspect `OrderController::create` around line 42."*
 
-Use `eval` to test hypotheses without modifying source:
-- `eval('$user->getId()')`
-- `eval('count($items)')`
-- `eval('$entityManager->getUnitOfWork()->getIdentityMap()')`
+**Agent steps:**
 
-Use `property_get` to drill into nested objects seen in `context`.
+1. `container_status`
+2. `container_enable` (if needed)
+3. `set_breakpoint` `{file: "src/Controller/OrderController.php", line: 42}`
+4. `request`:
+   ```json
+   {
+     "url": "http://127.0.0.1:8090/api/orders",
+     "method": "POST",
+     "headers": {"Content-Type": "application/json", "Authorization": "Bearer <token>"},
+     "body": "{\"product_id\": 123, \"quantity\": 2}"
+   }
+   ```
+5. The tool returns with `break` at `OrderController.php:42`.
+6. `stack` → see the call stack
+7. `context` → inspect `$request`, `$orderService`, local variables
+8. `eval('$request->getContent()')` → confirm what actually arrived
+9. `step_over` → advance one line without descending into callees
+10. `run` → continue to next breakpoint or end
+11. `detach` or `stop` → end session
+12. `container_disable` → turn Xdebug off (optional, restores performance)
 
-### Working with Secrets
+### When the breakpoint is NOT hit
 
-When headers contain JWT, cookies, or API keys, NEVER put them in tool arguments.
-Use `request_from_files`:
-- `headers_file` — path to file with `Name: Value` lines
-- `body_file` — path to raw body file
+If `request` returns `(script finished)` without breaking:
 
-## Common Gotchas
+- **Wrong line number** — the code at that line may not be executable (blank line, comment, brace). Try `set_breakpoint` with a different line, or `breakpoint_list` to confirm.
+- **Wrong file path** — `set_breakpoint` uses host paths. Ensure it matches the project root. Try an absolute path if relative fails.
+- **Xdebug off** — `container_status` shows off. Enable it.
+- **Route doesn't reach this code** — the URL may hit a different controller or a cached response. Verify the route mapping.
 
-- **Path translation:** Always use host paths in `set_breakpoint`. The tool translates to container paths internally. Stacks and breakpoints come back as host paths.
-- **Port 9003:** Only bound during an active tool call (`request`, `run_command`, `listen`). Between calls it's free — PhpStorm or browser Xdebug can use it.
-- **Session state:** `status` is safe to call anytime. It tells you if a session is active and where it's paused.
-- **One session at a time:** If a session is already active, `request` or `run_command` will error. Call `detach` or `stop` first.
-- **Breakpoints are queued:** If no session is active, `set_breakpoint` stores breakpoints locally and applies them when the next session starts.
+### Handling secrets (JWT, cookies, API keys)
 
-## Typical Conversation Patterns
+Never paste tokens into tool arguments. Use `request_from_files`:
 
-| User says | You do |
+1. Save headers to `/tmp/headers.txt`:
+   ```
+   Content-Type: application/json
+   Authorization: Bearer eyJhbG...
+   ```
+2. Save body to `/tmp/body.json`:
+   ```json
+   {"product_id": 123}
+   ```
+3. `request_from_files`:
+   ```json
+   {"url": "http://127.0.0.1:8090/api/orders", "method": "POST", "headers_file": "/tmp/headers.txt", "body_file": "/tmp/body.json"}
+   ```
+
+---
+
+## Flow 2: Debugging a CLI Command (agent-driven — `run_command`)
+
+Best for: Symfony console commands, artisan commands, or any CLI entrypoint reachable via `docker compose exec -T php <command>`.
+
+### Example — Symfony console command
+
+User says: *"`bin/console app:process-queue --queue=orders` fails silently. I think `QueueProcessor::process` at line 87 throws an exception that's swallowed."*
+
+**Agent steps:**
+
+1. `container_status`
+2. `container_enable` (if needed)
+3. `set_breakpoint` `{file: "src/Service/QueueProcessor.php", line: 87}`
+4. `run_command`:
+   ```json
+   {"command": "bin/console app:process-queue --queue=orders"}
+   ```
+5. The tool returns with `break` at `QueueProcessor.php:87`.
+6. `context` → inspect `$queue`, `$orders`
+7. `eval('$this->logger->getLogs()')` → check what was logged before the breakpoint
+8. `step_into` → descend into the function call on the next line
+9. `step_over` → advance without descending
+10. `run` → continue to next breakpoint or finish
+11. `detach` → let the command finish and see its output, or `stop` → kill it
+12. `container_disable`
+
+### Why `run_command` over `listen`
+
+- **One tool call** — you don't need to coordinate with the user to launch the command separately.
+- **Output available** — if the command finishes without breakpoints, you see the full stdout/stderr.
+- **Timeout handling** — `run_command` waits for the Xdebug connection, not forever.
+
+### When `run_command` is NOT suitable
+
+- The command must be run in a different container or via a different entrypoint (e.g. `docker compose run --rm worker` instead of `docker compose exec php`).
+- The command is triggered by an external scheduler (Cron, Kubernetes Job) and the agent can't run it.
+- The container exec prefix is misconfigured. → Use Flow 3.
+
+---
+
+## Flow 3: Debugging a CLI Command (manual launch — `listen`)
+
+Best for: When `run_command` can't reach the command (different container, special entrypoint, external trigger).
+
+### Example — Worker in a different container
+
+User says: *"The `worker` container runs `php bin/console messenger:consume async`. I need to debug the handler."*
+
+**Agent steps:**
+
+1. `container_status`
+2. `container_enable` (if needed)
+3. `set_breakpoint` `{file: "src/MessageHandler/ProcessOrderHandler.php", line: 15}`
+4. **`listen`** — this arms the listener and blocks until the engine connects:
+   ```json
+   {"timeoutMs": 60000}
+   ```
+   The tool returns: `listener armed (fire-and-forget); check status to see if a session was adopted`.
+5. **Tell the user** to launch the command (or you launch it if you have access):
+   ```bash
+   docker compose exec -T worker php bin/console messenger:consume async --limit=1
+   ```
+6. **`status`** — check if a session was adopted. Once the engine connects, `status` shows `break` at `ProcessOrderHandler.php:15`.
+7. `stack`, `context`, `eval` — inspect and step as usual
+8. `detach` or `stop` — end the session
+9. `container_disable`
+
+### Critical: `listen` is fire-and-forget
+
+`listen` does **not** return when the engine connects. It returns immediately with `listener armed`. You must poll `status` to detect when the session is adopted.
+
+If `status` still shows `no session` after the user launched the command:
+- The command ran to completion without hitting the breakpoint (wrong line, wrong file).
+- Xdebug is off in the worker container (check `container_status`).
+- The worker container can't reach `host.docker.internal:9003` (network/firewall issue).
+
+### Timeout tip
+
+Set `timeoutMs` generously for `listen` (e.g. 60000 or 120000). The user may need time to switch terminals and run the command. If `listen` times out, the listener closes and you must call `listen` again before the next launch.
+
+---
+
+## Common Failure Modes & Recovery
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `request` returns `(script finished)` immediately | Breakpoint not hit | Wrong line, wrong file, Xdebug off, or route mismatch. Check `breakpoint_list` and `container_status`. |
+| `run_command` returns `(script finished)` | Breakpoint not hit, or command has no Xdebug trigger | Same as above. Try `listen` + manual launch to verify the command actually runs the code. |
+| `status` shows `no session` after `listen` | Engine never connected | Xdebug off, wrong container, network issue. Ask user to verify `php -i \| grep xdebug.mode` inside the container. |
+| `request` / `run_command` error: "session already active" | Stale session from previous run | `detach` or `stop` first. Always check `status` before starting a new session. |
+| `step_into` behaves like `step_over` | No function call on current line, or function is internal/native | Normal. Use `step_over` or `run` instead. |
+| Variables show `object {3 children}` | Nested objects are collapsed | Use `property_get('$variable')` or `property_get('$variable->property')` to drill in. |
+| `eval` returns an error | Expression throws an exception or uses undefined variable | Check `context` first to see what's in scope. Try simpler expressions. |
+| Port 9003 busy | Another debugger (PhpStorm, xdbg instance) holds it | `lsof -i :9003` to find the process. Kill it, or use `--dbg-port` on a different port. |
+| Path translation wrong | `--local-root` or `--docker-root` mismatch | Verify paths: host root should map to container root. Breakpoint file paths must be under `local-root`. |
+
+---
+
+## Conversation Patterns — What to Say and Do
+
+| User says | You should |
 |---|---|
-| "Debug this endpoint" | `container_status` → enable if needed → `set_breakpoint` → `request` |
-| "Why is this command failing?" | `container_status` → enable → `set_breakpoint` → `run_command` |
-| "What's in `$user` at this point?" | `context` or `property_get('$user')` |
-| "Step into this function" | `step_into` |
-| "Let it run to the next breakpoint" | `run` |
-| "I'm done debugging" | `detach` or `stop` → `container_disable` (optional) |
+| *"Debug this endpoint: POST /api/foo with body {...}"* | `container_status` → enable → `set_breakpoint` → `request` → inspect |
+| *"This command fails: bin/console app:bar"* | `container_status` → enable → `set_breakpoint` → `run_command` → inspect |
+| *"I need to debug the worker container"* | `container_status` → enable → `set_breakpoint` → `listen` → instruct user to launch command → `status` → inspect |
+| *"What's in $user here?"* | `context` or `property_get('$user')` or `eval('$user->getRoles()')` |
+| *"Step into this function"* | `step_into` |
+| *"Let it run to the next breakpoint"* | `run` |
+| *"I'm done debugging"* | `detach` or `stop` → `container_disable` (optional) |
+| *"Why didn't it break?"* | Check `container_status`, `breakpoint_list`, verify file path and line number. Try `listen` + manual launch to test connectivity. |
+| *"The port is busy"* | Ask user to close PhpStorm/browser debugger, or run `lsof -i :9003` and kill the process. |
 
-## Ending the Session
+---
 
-Always clean up:
-1. `detach` or `stop` — frees port 9003
-2. `container_disable` — restores container performance (optional but polite)
+## Ending Every Session
+
+Always clean up to leave port 9003 free and container performance restored:
+
+1. `detach` (let finish) or `stop` (kill) — frees the debug session and port
+2. `container_disable` — turns Xdebug off (optional but recommended)
+3. `status` — confirm `no session` and port is free
+
+> **Note:** If you forget `detach`/`stop`, the next `request` or `run_command` will fail with "session already active". Always check `status` before starting a new session.
