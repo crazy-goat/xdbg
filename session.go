@@ -533,7 +533,8 @@ func (s *session) runShell(cmd string) (string, error) {
 	if cmd == "" {
 		return "", fmt.Errorf("command not configured (pass the relevant --xdebug-*-cmd flag)")
 	}
-	c := exec.Command("sh", "-c", cmd)
+	fullCmd := s.containerExec + " " + cmd
+	c := exec.Command("sh", "-c", fullCmd)
 	c.Dir = s.projectDir
 	out, err := c.CombinedOutput()
 	text := strings.TrimSpace(string(out))

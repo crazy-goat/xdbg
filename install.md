@@ -179,17 +179,17 @@ the skill. Do not install it silently.
 ### For Claude Code
 
 ```bash
-mkdir -p .claude/skills/xdebug-docker-debug
-curl -o .claude/skills/xdebug-docker-debug/SKILL.md \
-  https://raw.githubusercontent.com/crazy-goat/xdbg/main/skills/xdebug-docker-debug/SKILL.md
+mkdir -p ~/.claude/skills/xdbg
+curl -o ~/.claude/skills/xdbg/SKILL.md \
+  https://raw.githubusercontent.com/crazy-goat/xdbg/main/skills/xdbg/SKILL.md
 ```
 
 ### For opencode
 
 ```bash
-mkdir -p .config/opencode/skills/xdebug-docker-debug
-curl -o .config/opencode/skills/xdebug-docker-debug/SKILL.md \
-  https://raw.githubusercontent.com/crazy-goat/xdbg/main/skills/xdebug-docker-debug/SKILL.md
+mkdir -p ~/.config/opencode/skills/xdbg
+curl -o ~/.config/opencode/skills/xdbg/SKILL.md \
+  https://raw.githubusercontent.com/crazy-goat/xdbg/main/skills/xdbg/SKILL.md
 ```
 
 ### What the skill covers

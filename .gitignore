@@ -1,2 +1,7 @@
 /xdbg
 .DS_Store
+/.idea/.gitignore
+/.idea/modules.xml
+/.idea/php.xml
+/.idea/vcs.xml
+/.idea/xdbg.iml
