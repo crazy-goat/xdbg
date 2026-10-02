@@ -1,0 +1,7 @@
+version: "2"
+linters:
+  default: standard
+  disable:
+    # The DBGp session code deliberately ignores errors from best-effort
+    # cleanup calls (Close, detach, stop). See the findings of the CI rollout.
+    - errcheck
