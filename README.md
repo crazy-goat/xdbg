@@ -386,6 +386,10 @@ shell access.
 6. `xdbg_detach` or `xdbg_stop` — end the session and free port 9003
 7. `xdbg_container_disable` — turn Xdebug off (restore container performance)
 
+## Contributing
+
+The development and release process is described in [docs/workflow.md](docs/workflow.md) and [docs/release-workflow.md](docs/release-workflow.md). Project commands are in [AGENTS.md](AGENTS.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
