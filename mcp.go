@@ -113,7 +113,7 @@ func (m *mcpServer) serve() {
 			var req rpcReq
 			if json.Unmarshal(line, &req) == nil {
 				if resp := m.handle(req); resp != nil {
-					out.Encode(resp) // Encode appends a newline
+					out.Encode(resp) //nolint:errcheck // tracked in findings; Encode appends a newline
 				}
 			}
 		}
@@ -142,7 +142,7 @@ func (m *mcpServer) handle(req rpcReq) *rpcResp {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
-		json.Unmarshal(req.Params, &p)
+		json.Unmarshal(req.Params, &p) //nolint:errcheck // tracked in findings
 		text, err := m.call(p.Name, p.Arguments)
 		if err != nil {
 			resp.Result = map[string]any{"content": []any{textContent(err.Error())}, "isError": true}

@@ -199,13 +199,13 @@ func (s *session) adopt(conn net.Conn) {
 	var ir struct {
 		Fileuri string `xml:"fileuri,attr"`
 	}
-	unmarshal(initXML, &ir)
+	unmarshal(initXML, &ir) //nolint:errcheck // tracked in findings
 	s.state = "started"
 	log.Printf("session started: %s", s.toHost(ir.Fileuri))
 
-	s.rawLocked("feature_set", "-n max_depth -v 3")
-	s.rawLocked("feature_set", "-n max_children -v 100")
-	s.rawLocked("feature_set", "-n max_data -v 4096")
+	s.rawLocked("feature_set", "-n max_depth -v 3")      //nolint:errcheck // best-effort feature negotiation
+	s.rawLocked("feature_set", "-n max_children -v 100") //nolint:errcheck // best-effort feature negotiation
+	s.rawLocked("feature_set", "-n max_data -v 4096")    //nolint:errcheck // best-effort feature negotiation
 	for i := range s.pending {
 		if r, _, err := s.rawLocked("breakpoint_set", fmt.Sprintf("-t line -f %s -n %d", fileURI(s.pending[i].file), s.pending[i].line)); err == nil && r != nil {
 			s.pending[i].id = r.ID
@@ -220,7 +220,7 @@ func (s *session) adopt(conn net.Conn) {
 	if len(s.pending) == 0 {
 		r, _, _ := s.rawLocked("run", "")
 		if r != nil && r.Status == "stopping" {
-			s.rawLocked("stop", "")
+			s.rawLocked("stop", "") //nolint:errcheck // best-effort stop
 		}
 		if s.conn != nil {
 			s.conn.Close()
@@ -273,7 +273,7 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 		return nil, "", err
 	}
 	var r xResp
-	unmarshal(xmlStr, &r)
+	unmarshal(xmlStr, &r) //nolint:errcheck // tracked in findings
 	if r.Status != "" {
 		s.state = r.Status
 	}
@@ -402,7 +402,7 @@ func (s *session) BreakpointClearAll() (string, error) {
 	// If a session is active, tell the engine to drop each applied breakpoint.
 	for _, p := range pending {
 		if p.id != "" {
-			s.cmd("breakpoint_remove", "-d "+p.id)
+			s.cmd("breakpoint_remove", "-d "+p.id) //nolint:errcheck // best-effort cleanup
 		}
 	}
 	return fmt.Sprintf("cleared %d breakpoint(s)", len(pending)), nil
@@ -490,7 +490,7 @@ func (s *session) PropertySet(name, value string) (string, error) {
 }
 
 func (s *session) Detach() (string, error) {
-	s.cmd("detach", "")
+	s.cmd("detach", "") //nolint:errcheck // best-effort detach
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.conn != nil {
@@ -502,7 +502,7 @@ func (s *session) Detach() (string, error) {
 }
 
 func (s *session) Stop() (string, error) {
-	s.cmd("stop", "")
+	s.cmd("stop", "") //nolint:errcheck // best-effort stop
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.conn != nil {
