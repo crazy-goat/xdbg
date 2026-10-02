@@ -66,6 +66,38 @@ func TestServeIORepliesPerLine(t *testing.T) {
 	}
 }
 
+func TestServeIOParseError(t *testing.T) {
+	m := newMCP(newSession("/l", "/d"))
+	in := `{"jsonrpc":"2.0","id":1,"method":` + "\n" + // truncated JSON
+		"\n" + // blank lines get no reply
+		`[1,2]` + "\n" + // valid JSON, not a request object
+		`{"jsonrpc":"2.0","id":2,"method":"ping"}` + "\n"
+	var out bytes.Buffer
+	m.serveIO(strings.NewReader(in), &out)
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d responses, want 3: %q", len(lines), out.String())
+	}
+	for i, want := range []int{-32700, -32600} {
+		var r struct {
+			ID    json.RawMessage `json:"id"`
+			Error *rpcErr         `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(lines[i]), &r); err != nil {
+			t.Fatalf("response %d: %v", i, err)
+		}
+		if string(r.ID) != "null" || r.Error == nil || r.Error.Code != want {
+			t.Fatalf("response %d = %s, want error %d with id null", i, lines[i], want)
+		}
+	}
+	// The server keeps serving after bad input.
+	got := decodeResponses(t, lines[2])
+	if len(got) != 1 || got[0].Error != nil || string(got[0].ID) != "2" {
+		t.Fatalf("ping after garbage: %+v", got)
+	}
+}
+
 type failingWriter struct{ calls int }
 
 func (w *failingWriter) Write([]byte) (int, error) {

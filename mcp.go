@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -114,14 +115,25 @@ func (m *mcpServer) serveIO(in io.Reader, w io.Writer) {
 	out := json.NewEncoder(w)
 	for {
 		line, err := rd.ReadBytes('\n')
-		if len(line) > 0 {
+		if len(bytes.TrimSpace(line)) > 0 {
 			var req rpcReq
-			if json.Unmarshal(line, &req) == nil {
-				if resp := m.handle(req); resp != nil {
-					// Encode appends the newline. The client may be gone; there is nobody to tell, so log.
-					if err := out.Encode(resp); err != nil {
-						log.Printf("write response: %v", err)
-					}
+			var resp *rpcResp
+			if uerr := json.Unmarshal(line, &req); uerr != nil {
+				// No usable id: JSON-RPC 2.0 wants a null id. Syntax errors are parse
+				// errors; valid JSON of the wrong shape is an invalid request.
+				code, msg := -32700, "parse error: "
+				if json.Valid(line) {
+					code, msg = -32600, "invalid request: "
+				}
+				log.Printf("%s%v", msg, uerr)
+				resp = &rpcResp{JSONRPC: "2.0", Error: &rpcErr{Code: code, Message: msg + uerr.Error()}}
+			} else {
+				resp = m.handle(req)
+			}
+			if resp != nil {
+				// Encode appends the newline. The client may be gone; there is nobody to tell, so log.
+				if err := out.Encode(resp); err != nil {
+					log.Printf("write response: %v", err)
 				}
 			}
 		}
