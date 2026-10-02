@@ -23,15 +23,16 @@ type bp struct {
 }
 
 type session struct {
-	mu      sync.Mutex
-	conn    net.Conn
-	r       *bufio.Reader
-	tx      int
-	state   string // "no session" | "started" | "break" | "stopping"
-	file    string // current location, host path
-	line    int
-	pending []bp
-	ready   chan struct{} // closed on each adopt; lets ListenWait/DoRequest await a connection
+	mu       sync.Mutex
+	conn     net.Conn
+	r        *bufio.Reader
+	tx       int
+	state    string // "no session" | "started" | "break" | "stopping"
+	file     string // current location, host path
+	line     int
+	pending  []bp
+	ready    chan struct{} // closed on each adopt; lets ListenWait/DoRequest await a connection
+	adoptErr error         // why the last adopt failed (nil on success); read by the waiters after ready closes
 
 	dbgAddr string       // "host:port" where Xdebug connects (e.g. "0.0.0.0:9003")
 	ln      net.Listener // non-nil only while the ephemeral listener is open
@@ -189,21 +190,18 @@ func (s *session) adopt(conn net.Conn) {
 	s.r = bufio.NewReader(conn)
 	s.tx = 0
 	s.file, s.line = "", 0
+	s.adoptErr = nil
 
 	initXML, err := s.readPacket()
 	if err != nil {
-		s.state = "no session"
-		log.Printf("read init: %v", err)
+		s.failHandshakeLocked("read init", err)
 		return
 	}
 	var ir struct {
 		Fileuri string `xml:"fileuri,attr"`
 	}
 	if err := unmarshal(initXML, &ir); err != nil {
-		s.state = "no session"
-		log.Printf("parse init: %v", err)
-		s.conn.Close()
-		s.conn = nil
+		s.failHandshakeLocked("parse init", err)
 		return
 	}
 	s.state = "started"
@@ -235,8 +233,34 @@ func (s *session) adopt(conn net.Conn) {
 		s.state = "no session"
 	}
 
+	s.signalReadyLocked()
+}
+
+// failHandshakeLocked drops the connection after a failed DBGp handshake and
+// wakes the waiters with an error. s.mu must be held.
+func (s *session) failHandshakeLocked(step string, err error) {
+	log.Printf("%s: %v", step, err)
+	if s.conn != nil {
+		s.conn.Close()
+		s.conn = nil
+	}
+	s.state = "no session"
+	s.adoptErr = fmt.Errorf("DBGp handshake failed after Xdebug connected (%s): %w", step, err)
+	s.signalReadyLocked()
+}
+
+// signalReadyLocked wakes everyone waiting on s.ready and arms a new channel
+// for the next connection. s.mu must be held.
+func (s *session) signalReadyLocked() {
 	close(s.ready)
 	s.ready = make(chan struct{})
+}
+
+// handshakeError returns the error of the last failed adopt, or nil.
+func (s *session) handshakeError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.adoptErr
 }
 
 // --- wire protocol ----------------------------------------------------------
@@ -565,6 +589,9 @@ func (s *session) ListenWait(timeout time.Duration) (string, error) {
 
 	select {
 	case <-ready:
+		if err := s.handshakeError(); err != nil {
+			return "", err
+		}
 		return s.Status(), nil
 	case <-time.After(timeout):
 		s.closeLn()
@@ -632,6 +659,9 @@ func (s *session) RunCommand(command string, timeout time.Duration) (string, err
 
 	select {
 	case <-ready:
+		if err := s.handshakeError(); err != nil {
+			return "", err
+		}
 		s.mu.Lock()
 		state := s.state
 		s.mu.Unlock()

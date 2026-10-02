@@ -46,6 +46,9 @@ func (s *session) doAndWait(req *http.Request, timeout time.Duration) (string, e
 		// is done. Otherwise the engine is paused at the start of the script
 		// (state="started") with breakpoints applied — return without detaching
 		// so the caller can drive: run / step_* / eval / …
+		if err := s.handshakeError(); err != nil {
+			return "", err
+		}
 		s.mu.Lock()
 		state := s.state
 		s.mu.Unlock()

@@ -103,8 +103,69 @@ func TestAdoptMalformedInit(t *testing.T) {
 	}
 	select {
 	case <-ready:
-		t.Fatal("a failed handshake must not signal ready")
 	default:
+		t.Fatal("a failed handshake must wake the waiters")
+	}
+	if err := s.handshakeError(); err == nil || !strings.Contains(err.Error(), "parse init") {
+		t.Fatalf("handshakeError = %v, want a parse init error", err)
+	}
+}
+
+func TestAdoptTruncatedInitPacket(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	ready := s.ready
+	go func() {
+		// Announce 100 bytes, deliver 3, then hang up.
+		_, _ = eng.conn.Write([]byte("100\x00abc"))
+		_ = eng.conn.Close()
+	}()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	s.adopt(conn)
+
+	select {
+	case <-ready:
+	default:
+		t.Fatal("a failed handshake must wake the waiters")
+	}
+	if err := s.handshakeError(); err == nil || !strings.Contains(err.Error(), "read init") {
+		t.Fatalf("handshakeError = %v, want a read init error", err)
+	}
+	if s.state != "no session" || s.conn != nil {
+		t.Fatalf("state = %q, conn nil = %v", s.state, s.conn == nil)
+	}
+}
+
+func TestListenWaitFailedHandshake(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen: %v", err)
+	}
+	addr := probe.Addr().String()
+	probe.Close()
+
+	s := newSession("/l", "/d")
+	s.dbgAddr = addr
+	go func() {
+		for i := 0; i < 100; i++ { // wait for the listener, then send a truncated init
+			if c, err := net.Dial("tcp", addr); err == nil {
+				_, _ = c.Write([]byte(dbgpPacket(xmlProlog + `<init fileuri="file:///d/index.php"`)))
+				t.Cleanup(func() { _ = c.Close() })
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	start := time.Now()
+	_, err = s.ListenWait(10 * time.Second)
+
+	if err == nil || !strings.Contains(err.Error(), "handshake failed") {
+		t.Fatalf("ListenWait error = %v, want a handshake error", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("ListenWait took %s, it must not wait for the timeout", time.Since(start))
 	}
 }
 
