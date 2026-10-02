@@ -24,20 +24,8 @@ jobs:
     name: Docs
     uses: crazy-goat/.github/.github/workflows/docs-check.yml@main
 
-  vet:
-    name: Go vet
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - run: go vet ./...
-
   lint:
-    name: golangci-lint
+    name: Lint
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -46,9 +34,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v8
-        with:
-          version: v2.13.2
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/v2.13.2/install.sh \
+            | sh -s -- -b "$HOME/.local/bin" v2.13.2
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: shellcheck --version
+      - run: bin/lint.sh
 
   test:
     name: Go test
@@ -76,7 +68,7 @@ jobs:
 
   ci-ok:
     name: ci-ok
-    needs: [changes, docs, vet, lint, test, build]
+    needs: [changes, docs, lint, test, build]
     runs-on: ubuntu-latest
     if: always()
     steps:

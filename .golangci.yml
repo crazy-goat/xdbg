@@ -14,3 +14,6 @@ linters:
         - (*bufio.Reader).ReadByte
         - (io.Closer).Close
         - io.Copy
+formatters:
+  enable:
+    - gofmt

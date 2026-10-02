@@ -14,11 +14,11 @@ type xResp struct {
 	Status      string  `xml:"status,attr"`
 	Reason      string  `xml:"reason,attr"`
 	Command     string  `xml:"command,attr"`
-	ID          string  `xml:"id,attr"`      // breakpoint_set returns the new id here
-	Message     *xMsg   `xml:"message"`      // xdebug:message on break/step
-	Stacks      []xStk  `xml:"stack"`        // stack_get
-	Props       []xProp `xml:"property"`     // context_get / eval / property_get
-	Breakpoints []xBkpt `xml:"breakpoint"`   // breakpoint_list
+	ID          string  `xml:"id,attr"`    // breakpoint_set returns the new id here
+	Message     *xMsg   `xml:"message"`    // xdebug:message on break/step
+	Stacks      []xStk  `xml:"stack"`      // stack_get
+	Props       []xProp `xml:"property"`   // context_get / eval / property_get
+	Breakpoints []xBkpt `xml:"breakpoint"` // breakpoint_list
 	Error       *xErr   `xml:"error"`
 }
 

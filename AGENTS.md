@@ -32,8 +32,8 @@ Go version: from `go.mod` (CI uses `go-version-file: go.mod`).
 
 ```bash
 go build ./...                 # compile everything
-go vet ./...
-golangci-lint run ./...        # config: .golangci.yml (golangci-lint v2)
+bin/lint.sh                    # gofmt, go vet, golangci-lint (.golangci.yml, v2), shellcheck; check only
+bin/lint.sh --fix              # gofmt -w first, then the same checks
 go test -race -count=1 ./...   # there are no test files yet
 
 make build                     # builds to ~/.local/bin/xdbg
@@ -64,8 +64,8 @@ The built binary (`/xdbg`) and `dist/` are generated and must never be committed
 ## CI
 
 `.github/workflows/tests.yaml` runs on pull requests and pushes to `main`. The `changes`
-job detects documentation-only changes; the `docs` job checks them fast. `go vet`,
-`golangci-lint`, `go test -race` and `go build` run only for code changes. The required
+job detects documentation-only changes; the `docs` job checks them fast. The `lint` job
+(`bin/lint.sh`), `go test -race` and `go build` run only for code changes. The required
 check is `ci-ok`. Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yaml`.
 
 ## Conventions
