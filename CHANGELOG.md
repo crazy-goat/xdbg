@@ -15,4 +15,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Issue forms and a pull request template (#1)
 
 ### Changed
-- The example Docker Compose stack publishes its host port through `XDBG_EXAMPLE_PORT` (default `8888`)
+- The example Docker Compose stack publishes its host port through `XDBG_EXAMPLE_PORT` (default `8888`) (#1)
