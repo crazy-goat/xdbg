@@ -98,6 +98,33 @@ func TestServeIOParseError(t *testing.T) {
 	}
 }
 
+func TestServeIOMissingMethod(t *testing.T) {
+	m := newMCP(newSession("/l", "/d"))
+	in := `{}` + "\n" +
+		`null` + "\n" +
+		`{"jsonrpc":"2.0","id":7}` + "\n" + // id but no method: the reply keeps the id
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n" // a real notification: no reply
+	var out bytes.Buffer
+	m.serveIO(strings.NewReader(in), &out)
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d responses, want 3: %q", len(lines), out.String())
+	}
+	for i, wantID := range []string{"null", "null", "7"} {
+		var r struct {
+			ID    json.RawMessage `json:"id"`
+			Error *rpcErr         `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(lines[i]), &r); err != nil {
+			t.Fatalf("response %d: %v", i, err)
+		}
+		if string(r.ID) != wantID || r.Error == nil || r.Error.Code != -32600 {
+			t.Fatalf("response %d = %s, want error -32600 with id %s", i, lines[i], wantID)
+		}
+	}
+}
+
 type failingWriter struct{ calls int }
 
 func (w *failingWriter) Write([]byte) (int, error) {

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The example Docker Compose stack publishes its host port through `XDBG_EXAMPLE_PORT` (default `8888`) (#1)
 
 ### Fixed
+- A JSON message without a `method` (for example `{}` or `null`) now gets a `-32600` invalid request error instead of being taken for a notification and dropped silently (#18)
 - The MCP server answers a line that is not valid JSON with a `-32700` parse error (or `-32600` for valid JSON that is not a request) and a null id, and logs it, instead of dropping it silently and leaving the client waiting (#15)
 - A failed DBGp handshake (unreadable or malformed init packet) now wakes `request`, `listen` and `run_command` at once with a "handshake failed" error, instead of letting them wait for the full timeout and report a misleading "is Xdebug enabled?" message (#14)
 - Malformed `tools/call` params now return a JSON-RPC `-32602` error instead of calling a tool named `""`; a failed write of a response to stdout is logged to stderr; a malformed DBGp init packet drops the connection and a malformed DBGp response is returned as an error instead of an empty response. The four `//nolint:errcheck` comments are gone (#2)

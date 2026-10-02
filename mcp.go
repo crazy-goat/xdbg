@@ -127,6 +127,11 @@ func (m *mcpServer) serveIO(in io.Reader, w io.Writer) {
 				}
 				log.Printf("%s%v", msg, uerr)
 				resp = &rpcResp{JSONRPC: "2.0", Error: &rpcErr{Code: code, Message: msg + uerr.Error()}}
+			} else if req.Method == "" {
+				// Valid JSON that decodes to a request without a method, e.g. `{}` or `null`.
+				// Without this check it would pass for a notification and get no reply.
+				log.Printf("invalid request: missing method")
+				resp = &rpcResp{JSONRPC: "2.0", ID: req.ID, Error: &rpcErr{Code: -32600, Message: "invalid request: missing method"}}
 			} else {
 				resp = m.handle(req)
 			}
