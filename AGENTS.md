@@ -43,7 +43,7 @@ make install                   # same, see install.md
 Run the server by hand (it speaks MCP on stdin/stdout, logs go to stderr):
 
 ```bash
-go run . --dbg-port 9003 --local-root "$PWD/example" --docker-root /var/www/html
+go run . mcp --dbg-port 9003 --local-root "$PWD/example" --docker-root /var/www/html
 ```
 
 Normally an MCP client starts it, see `README.md`.
@@ -76,8 +76,9 @@ check is `ci-ok`. Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yaml`.
   deliberately, keep them backward compatible where possible, and document the change
   in `CHANGELOG.md` and `README.md`.
 - Logs go to stderr only. Stdout belongs to the MCP protocol; never print to it.
-- `errcheck` is disabled in `.golangci.yml` because best-effort cleanup calls ignore
-  errors on purpose. Handle errors that change behaviour.
+- `errcheck` stays on. Cleanup calls (`Close`, `SetDeadline`, `ReadByte`, `io.Copy`) are excluded in
+  `.golangci.yml`; deliberate best-effort sites carry `//nolint:errcheck // <reason>`. Handle
+  errors that change behaviour.
 - New code gets tests where it can be tested without a running PHP container (DBGp
   parsing, path translation, JSON-RPC handling).
 - Milestone numbers are not versions. Use the milestone title (`vX.Y.Z`).

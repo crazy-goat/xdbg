@@ -157,9 +157,9 @@ adapted to your client's MCP configuration format.
 
 2. Confirm the MCP server starts correctly:
    ```bash
-   xdbg --dbg-port 9003 \
-        --local-root /path/to/project \
-        --docker-root /var/www/project
+   xdbg mcp --dbg-port 9003 \
+             --local-root /path/to/project \
+             --docker-root /var/www/project
    # Should print: MCP stdio server ready (xdbg tools)
    ```
 
