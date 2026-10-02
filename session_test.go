@@ -90,6 +90,8 @@ func TestAdoptMalformedInit(t *testing.T) {
 	ready := s.ready
 	eng.drain()
 	go eng.send(xmlProlog + `<init fileuri="file:///d/index.php"`) // truncated XML
+	// Without the fix adopt goes on to negotiate features; the deadline makes that fail fast.
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 
 	s.adopt(conn)
 

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"testing"
 )
@@ -76,7 +78,13 @@ func TestServeIOLogsWriteErrors(t *testing.T) {
 	in := `{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n" +
 		`{"jsonrpc":"2.0","id":2,"method":"ping"}` + "\n"
 	w := &failingWriter{}
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	m.serveIO(strings.NewReader(in), w)
+	if !strings.Contains(logs.String(), "write response: broken pipe") {
+		t.Fatalf("write error was not logged: %q", logs.String())
+	}
 	// json.Encoder keeps its first error, so only one write reaches the writer. The point is
 	// that serveIO logs the failure and returns at EOF instead of panicking or hanging.
 	if w.calls < 1 {
