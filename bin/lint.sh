@@ -13,22 +13,12 @@ step() {
     "$@" || failed+=("$name")
 }
 
-gofmt_check() {
-    local out
-    out=$(gofmt -l .) || return 1
-    if [ -n "$out" ]; then
-        echo "Not gofmt-formatted:" >&2
-        echo "$out" >&2
-        return 1
-    fi
-}
-
 if [ "$FIX" = 1 ]; then
-    step "gofmt -w" gofmt -w .
+    golangci-lint fmt
 fi
 
-step "gofmt" gofmt_check
 step "go vet" go vet ./...
+# golangci-lint run also checks formatting (gofmt formatter in .golangci.yml).
 step "golangci-lint" golangci-lint run
 step "shellcheck" bash -c 'git ls-files -z "*.sh" | xargs -0 -r shellcheck'
 
