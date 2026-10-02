@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"strconv"
 	"time"
@@ -104,16 +106,22 @@ func newMCP(s *session) *mcpServer {
 	return &mcpServer{sess: s, tools: t}
 }
 
-func (m *mcpServer) serve() {
-	rd := bufio.NewReaderSize(os.Stdin, 1<<20)
-	out := json.NewEncoder(os.Stdout)
+func (m *mcpServer) serve() { m.serveIO(os.Stdin, os.Stdout) }
+
+// serveIO runs the JSON-RPC loop: one request per line from in, one response per line to out.
+func (m *mcpServer) serveIO(in io.Reader, w io.Writer) {
+	rd := bufio.NewReaderSize(in, 1<<20)
+	out := json.NewEncoder(w)
 	for {
 		line, err := rd.ReadBytes('\n')
 		if len(line) > 0 {
 			var req rpcReq
 			if json.Unmarshal(line, &req) == nil {
 				if resp := m.handle(req); resp != nil {
-					out.Encode(resp) //nolint:errcheck // see #2; Encode appends a newline
+					// Encode appends the newline. The client may be gone; there is nobody to tell, so log.
+					if err := out.Encode(resp); err != nil {
+						log.Printf("write response: %v", err)
+					}
 				}
 			}
 		}
@@ -142,7 +150,10 @@ func (m *mcpServer) handle(req rpcReq) *rpcResp {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
-		json.Unmarshal(req.Params, &p) //nolint:errcheck // see #2
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			resp.Error = &rpcErr{Code: -32602, Message: "invalid params: " + err.Error()}
+			return resp
+		}
 		text, err := m.call(p.Name, p.Arguments)
 		if err != nil {
 			resp.Result = map[string]any{"content": []any{textContent(err.Error())}, "isError": true}

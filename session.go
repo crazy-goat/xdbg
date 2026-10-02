@@ -199,7 +199,13 @@ func (s *session) adopt(conn net.Conn) {
 	var ir struct {
 		Fileuri string `xml:"fileuri,attr"`
 	}
-	unmarshal(initXML, &ir) //nolint:errcheck // see #2
+	if err := unmarshal(initXML, &ir); err != nil {
+		s.state = "no session"
+		log.Printf("parse init: %v", err)
+		s.conn.Close()
+		s.conn = nil
+		return
+	}
 	s.state = "started"
 	log.Printf("session started: %s", s.toHost(ir.Fileuri))
 
@@ -273,7 +279,9 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 		return nil, "", err
 	}
 	var r xResp
-	unmarshal(xmlStr, &r) //nolint:errcheck // see #2
+	if err := unmarshal(xmlStr, &r); err != nil {
+		return nil, xmlStr, fmt.Errorf("parse %s response: %w", name, err)
+	}
 	if r.Status != "" {
 		s.state = r.Status
 	}
