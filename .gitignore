@@ -5,3 +5,7 @@
 /.idea/php.xml
 /.idea/vcs.xml
 /.idea/xdbg.iml
+/dist/
+/findings.md
+/review.md
+/.env.worktree
