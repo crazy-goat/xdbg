@@ -33,7 +33,7 @@ Go version: from `go.mod` (CI uses `go-version-file: go.mod`).
 ```bash
 go build ./...                 # compile everything
 bin/lint.sh                    # gofmt, go vet, golangci-lint (.golangci.yml, v2), shellcheck; check only
-bin/lint.sh --fix              # gofmt -w first, then the same checks
+bin/lint.sh --fix              # golangci-lint fmt first, then the same checks
 go test -race -count=1 ./...   # there are no test files yet
 
 make build                     # builds to ~/.local/bin/xdbg
