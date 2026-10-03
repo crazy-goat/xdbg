@@ -44,6 +44,11 @@ score breakdown. You still make the final pick. Blocked issues
   exits with code **3** and prints `RELEASE NEEDED`. Stop. Cut the release first
   (see [release-workflow.md](release-workflow.md)), then run the script again.
   Do not take issues from a higher milestone.
+- **Empty milestone:** a milestone with no issues at all — 0 open *and* 0 closed —
+  exits with code **4** and prints `MILESTONE EMPTY`. Nothing was ever done under
+  it, so there is no release to cut: assign issues to it, or close it so the next
+  milestone is picked. Triage keeps creating milestones, so this is a normal
+  state to hit, not a release signal.
 - Read the issue, including **Where to start** and **Definition of done**.
 
 ## 2. Create a worktree

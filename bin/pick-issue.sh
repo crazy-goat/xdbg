@@ -30,11 +30,19 @@
 #   2  usage error (bad option, unknown milestone)
 #   3  RELEASE NEEDED: the target milestone has no open issues left —
 #      stop the workflow, cut the release, close the milestone, re-run
+#   4  MILESTONE EMPTY: the target milestone has no issues at all, open or
+#      closed — there is nothing to release and nothing to pick; assign
+#      issues to it, or close it so the next one is picked
 #
 # Release rule: the workflow works milestone-by-milestone, lowest first.
-# An empty milestone ends the picking loop — do not silently move to the
-# next one. Cut a release for the finished milestone, close it, then the
-# next run will pick the next one.
+# A milestone with work finished (0 open, at least 1 closed) ends the picking
+# loop — do not silently move to the next one. Cut a release for it, close it,
+# then the next run will pick the next one.
+#
+# A milestone with NO issues at all (0 open, 0 closed) is a different case and
+# gets its own exit code: nothing was ever done under it, so there is nothing
+# to release. Report that and stop; the milestone needs issues assigned to it
+# (see docs/workflow.md, "Pick an issue").
 #
 # Scoring (additive, all components shown in the breakdown). Labels follow the
 # crazy-goat standard (https://github.com/crazy-goat/.github):
@@ -66,6 +74,7 @@ EXIT_OK=0
 EXIT_GH_ERROR=1
 EXIT_USAGE=2
 EXIT_RELEASE_NEEDED=3
+EXIT_MILESTONE_EMPTY=4
 
 TOP=5
 REPO="$DEFAULT_REPO"
@@ -136,6 +145,8 @@ Exit codes:
   2  usage error
   3  RELEASE NEEDED: target milestone has no open issues left —
      cut the release, close the milestone, re-run
+  4  MILESTONE EMPTY: target milestone has no issues at all —
+     assign issues to it, or close it; nothing to release
 EOF
 }
 
@@ -414,9 +425,26 @@ main() {
         picked_reason="lowest open milestone by version"
     fi
 
-    # 4. Release rule: an empty milestone ends the workflow — stop here.
+    # 4. Release rule: a milestone with all its work finished ends the
+    #    workflow — stop here. A milestone with NO issues at all is a
+    #    different case: nothing was ever done under it, so there is no
+    #    release to cut, and saying "RELEASE NEEDED" would send a caller
+    #    off to tag a version with nothing in it.
     if [ "$target_open" -eq 0 ]; then
         local message
+        if [ "$target_closed" -eq 0 ]; then
+            message="$(printf 'Milestone %s has no issues at all (0 open, 0 closed) — there is nothing to release and nothing to pick. Assign issues to it, or close it so the script picks the next milestone:\n  1. Assign issues: gh issue edit <N> --milestone "%s"\n  2. Or close the milestone: gh api --method PATCH repos/%s/milestones/<number> -f state=closed\n  3. Re-run this script afterwards\n' \
+                "$target_title" "$target_title" "$REPO")"
+            if [ "$JSON_OUT" -eq 1 ]; then
+                printf '{\n  "milestone_empty": true,\n  "release_needed": false,\n  "message": "%s",\n  "milestone": {\n    "title": "%s",\n    "open_issues": 0,\n    "closed_issues": 0\n  }\n}\n' \
+                    "$(json_escape "$message")" "$(json_escape "$target_title")"
+            else
+                echo "MILESTONE EMPTY — workflow stopped."
+                echo
+                echo "$message"
+            fi
+            exit "$EXIT_MILESTONE_EMPTY"
+        fi
         message="$(printf 'Milestone %s is complete (0 open issues left). STOP the workflow — cut the release:\n  1. Follow docs/release-workflow.md (CHANGELOG PR, annotated tag %s)\n  2. Close milestone %s\n  3. Re-run this script to pick the next milestone\n' \
             "$target_title" "$target_title" "$target_title")"
         if [ "$JSON_OUT" -eq 1 ]; then
