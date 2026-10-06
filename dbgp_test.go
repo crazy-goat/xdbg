@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // --- DBGp packet framing (readPacket) ---------------------------------------
@@ -187,5 +188,18 @@ func TestSummarizeTruncatesLongValue(t *testing.T) {
 	got := summarize(xProp{Type: "string", Value: long})
 	if len([]rune(got)) != 301 || !strings.HasSuffix(got, "…") {
 		t.Fatalf("summarize length = %d, want 301 ending in an ellipsis", len([]rune(got)))
+	}
+}
+
+func TestSummarizeTruncatesOnRuneBoundary(t *testing.T) {
+	// A one-byte prefix followed by two-byte runes puts the 300-byte offset in
+	// the middle of a rune, so byte slicing would produce invalid UTF-8.
+	long := "a" + strings.Repeat("é", 350)
+	got := summarize(xProp{Type: "string", Value: long})
+	if !utf8.ValidString(got) {
+		t.Fatalf("summarize = %q, want valid UTF-8", got)
+	}
+	if len([]rune(got)) != 301 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("summarize length = %d runes, want 301 ending in an ellipsis", len([]rune(got)))
 	}
 }
