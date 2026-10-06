@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `breakpoint_list` now lists queued breakpoints as host paths without an active session and returns `(none)` for an empty list. With an active session, it lists engine breakpoints and queued entries without engine ids. Rejected entries retain their error text in both cases (#28)
 - DBGp `<error>` responses now return command errors with the engine code and message instead of success. Engine errors do not close the session. A failed live breakpoint is not stored. Rejected queued breakpoints appear in stderr logs and `breakpoint_list`. `property_set` also returns an error for `success="0"` (#24)
 - Path translation now respects directory boundaries and preserves `/` as a root. Root comparisons and suffix extraction use clean paths, so dot segments and repeated separators do not select the wrong root. An empty `--docker-root` resolves relative paths under the local root and leaves engine paths unchanged. When roots overlap, the more specific root takes precedence for breakpoint paths (#23)
 - Invalid DBGp payload lengths no longer crash the MCP server or cause excessive allocation. xdbg rejects negative lengths and lengths above 64 MiB. A missing or invalid trailing NUL now causes an error and closes the engine connection (#22)

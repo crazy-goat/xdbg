@@ -245,10 +245,12 @@ If the engine rejects a queued breakpoint, xdbg logs the rejection to stderr and
 
 ### `xdbg_breakpoint_list()`
 Lists all breakpoints known to the engine, with their ids, state
-(`enabled`/`disabled`), file (translated back to a host path) and line. When
-no session is active, lists the queued breakpoints instead. Use it to verify
-what's armed before firing a request. Safe to call any time.
-Rejected queued breakpoints appear as `rejected <file>:<line>: <error>`, including when the engine lists accepted breakpoints.
+(`enabled`/`disabled`), host path, and line.
+With an active session, it also lists queued breakpoints that have no engine id.
+When no session is active, it lists the local queue instead.
+Queued entries appear as `queued <file>:<line>`. An empty list returns `(none)`.
+Use it to check breakpoints before a request. Safe to call any time.
+Rejected queued breakpoints appear as `rejected <file>:<line>: <error>` with or without an active session.
 
 ### `xdbg_breakpoint_remove(string id)`
 `id` is the breakpoint id returned by `xdbg_set_breakpoint` or shown by

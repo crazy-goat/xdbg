@@ -433,20 +433,22 @@ func (s *session) SetBreakpoint(file string, line int) (string, error) {
 }
 
 func (s *session) BreakpointList() (string, error) {
-	r, _, err := s.cmd("breakpoint_list", "")
-	if err != nil {
-		return "", err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var b strings.Builder
-	for _, e := range r.Breakpoints {
-		fmt.Fprintf(&b, "id=%s %s %s:%d\n", e.ID, e.State, s.toHost(e.Filename), e.Lineno)
+	if s.conn != nil {
+		r, _, err := s.rawLocked("breakpoint_list", "")
+		if err != nil {
+			return "", err
+		}
+		for _, e := range r.Breakpoints {
+			fmt.Fprintf(&b, "id=%s %s %s:%d\n", e.ID, e.State, s.toHost(e.Filename), e.Lineno)
+		}
 	}
 	for _, p := range s.pending {
 		if p.err != "" {
 			fmt.Fprintf(&b, "rejected %s:%d: %s\n", s.toHost(p.file), p.line, p.err)
-		} else if len(r.Breakpoints) == 0 {
+		} else if s.conn == nil || p.id == "" {
 			fmt.Fprintf(&b, "queued %s:%d\n", s.toHost(p.file), p.line)
 		}
 	}

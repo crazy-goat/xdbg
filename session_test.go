@@ -250,6 +250,104 @@ func TestSetBreakpointEngineError(t *testing.T) {
 	}
 }
 
+func TestBreakpointListNoSessionShowsQueued(t *testing.T) {
+	s := newSession("/home/dev/app", "/var/www/app")
+	for _, p := range []bp{{file: "src/Foo.php", line: 10}, {file: "src/Bar.php", line: 20}} {
+		if _, err := s.SetBreakpoint(p.file, p.line); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	text, err := s.BreakpointList()
+	want := "queued /home/dev/app/src/Foo.php:10\nqueued /home/dev/app/src/Bar.php:20\n"
+	if err != nil || text != want {
+		t.Fatalf("BreakpointList = %q, %v; want %q without an error", text, err, want)
+	}
+}
+
+func TestBreakpointListNoSessionEmpty(t *testing.T) {
+	s := newSession("/home/dev/app", "/var/www/app")
+
+	text, err := s.BreakpointList()
+	if err != nil || text != "(none)" {
+		t.Fatalf("BreakpointList = %q, %v; want (none) without an error", text, err)
+	}
+}
+
+func TestBreakpointListNoSessionRetainsRejected(t *testing.T) {
+	s := newSession("/home/dev/app", "/var/www/app")
+	s.pending = []bp{
+		{file: "/var/www/app/a.php", line: 3, id: "1"},
+		{file: "/var/www/app/b.php", line: 5, err: "breakpoint_set error 200: breakpoint could not be set"},
+	}
+
+	text, err := s.BreakpointList()
+	want := "queued /home/dev/app/a.php:3\n" +
+		"rejected /home/dev/app/b.php:5: breakpoint_set error 200: breakpoint could not be set\n"
+	if err != nil || text != want {
+		t.Fatalf("BreakpointList = %q, %v; want %q without an error", text, err, want)
+	}
+}
+
+func TestBreakpointListWithSessionMergesQueued(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/home/dev/app", "/var/www/app")
+	if _, err := s.SetBreakpoint("a.php", 3); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	go func() {
+		eng.send(xmlProlog + `<init fileuri="file:///var/www/app/index.php"/>`)
+		eng.respond(
+			`<response command="feature_set" success="1"/>`,
+			`<response command="feature_set" success="1"/>`,
+			`<response command="feature_set" success="1"/>`,
+			`<response command="breakpoint_set" id="1"/>`,
+			`<response command="breakpoint_list"><breakpoint id="1" state="enabled" filename="file:///var/www/app/a.php" lineno="3"/></response>`,
+		)
+	}()
+
+	s.adopt(conn)
+	if s.conn == nil || s.pending[0].id != "1" {
+		t.Fatalf("adopt: conn nil = %v, pending = %+v; want an applied breakpoint", s.conn == nil, s.pending)
+	}
+	s.pending = append(s.pending,
+		bp{file: "/var/www/app/b.php", line: 5},
+		bp{file: "/var/www/app/c.php", line: 7, err: "breakpoint_set error 200: breakpoint could not be set"},
+	)
+
+	text, err := s.BreakpointList()
+	want := "id=1 enabled /home/dev/app/a.php:3\nqueued /home/dev/app/b.php:5\n" +
+		"rejected /home/dev/app/c.php:7: breakpoint_set error 200: breakpoint could not be set\n"
+	if err != nil || text != want {
+		t.Fatalf("BreakpointList = %q, %v; want %q without an error or duplicate", text, err, want)
+	}
+}
+
+func TestBreakpointListWithSessionEmpty(t *testing.T) {
+	for _, pending := range [][]bp{nil, {{file: "/d/a.php", line: 3, id: "1"}}} {
+		s, eng := newActivePipe(t)
+		s.pending = pending
+		go eng.respond(`<response command="breakpoint_list"/>`)
+
+		text, err := s.BreakpointList()
+		if err != nil || text != "(none)" {
+			t.Fatalf("BreakpointList with pending %+v = %q, %v; want (none) without an error", pending, text, err)
+		}
+	}
+}
+
+func TestBreakpointListEngineError(t *testing.T) {
+	s, eng := newActivePipe(t)
+	s.pending = []bp{{file: "/d/a.php", line: 3}}
+	go eng.respond(`<response command="breakpoint_list"><error code="5"><message>command is not available</message></error></response>`)
+
+	text, err := s.BreakpointList()
+	if err == nil || err.Error() != "breakpoint_list error 5: command is not available" || text != "" {
+		t.Fatalf("BreakpointList = %q, %v; want the engine error, not queued breakpoints", text, err)
+	}
+}
+
 func TestPropertySetEngineError(t *testing.T) {
 	s, eng := newActivePipe(t)
 	go eng.respond(`<response command="property_set" success="0"><error code="300"><message>can not get property</message></error></response>`)
