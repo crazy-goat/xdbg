@@ -15,6 +15,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is the release version reported by `xdbg --version` and the MCP
+// serverInfo. It is injected at build time with
+// -ldflags "-X main.version=..."; local builds keep the "dev" default.
+var version = "dev"
+
 func getwdDefault() string {
 	d, err := os.Getwd()
 	if err != nil {
@@ -70,6 +75,7 @@ func main() {
 			return mcpCmd.RunE(mcpCmd, args)
 		},
 		SilenceUsage: true,
+		Version:      version,
 	}
 	root.AddCommand(mcpCmd)
 

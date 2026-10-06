@@ -41,7 +41,10 @@ In `CHANGELOG.md`:
 - Add a fresh empty `## [Unreleased]` above it.
 - Group entries under Added, Changed, Deprecated, Removed, Fixed, Security.
 - Update the compare links at the bottom, if the file has them.
-- Bump `serverInfo.version` in `mcp.go` (the version the MCP server reports) to `X.Y.Z`.
+
+The binary version is injected from the tag at build time
+(`-ldflags "-X main.version=${GITHUB_REF_NAME#v}"` in `release.yaml`), so there
+is nothing to bump by hand; local builds report `dev`.
 
 Open a PR titled `chore: release vX.Y.Z`, wait for `ci-ok`, squash merge
 (`gh pr merge --squash --delete-branch`). Push the branch with an explicit ref:
@@ -97,7 +100,6 @@ Make sure the next milestone `vX.Y.(Z+1)` (or the next minor) exists.
 
 - [ ] Milestone has no open issues, CI is green
 - [ ] CHANGELOG section `[X.Y.Z] - date` written, `[Unreleased]` is empty
-- [ ] `serverInfo.version` in `mcp.go` bumped to `X.Y.Z`
 - [ ] Release PR merged
 - [ ] Annotated tag `vX.Y.Z` pushed
 - [ ] GitHub Release exists with the CHANGELOG notes and the four binaries

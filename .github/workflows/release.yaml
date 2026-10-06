@@ -43,7 +43,7 @@ jobs:
             os="${target%/*}"; arch="${target#*/}"
             echo "Building ${os}/${arch}"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -trimpath -ldflags="-s -w" -o "dist/xdbg_${os}_${arch}" .
+              go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" -o "dist/xdbg_${os}_${arch}" .
           done
           (cd dist && sha256sum xdbg_* > checksums.txt)
 
