@@ -78,6 +78,52 @@ func TestToolsCallSetBreakpointEngineError(t *testing.T) {
 	}
 }
 
+func TestToolsCallBreakpointRemoveEngineError(t *testing.T) {
+	s, eng := newActivePipe(t)
+	s.pending = []bp{{file: "/d/a.php", line: 3, id: "1001", qid: "q1"}}
+	go eng.respond(`<response command="breakpoint_remove"><error code="205"><message>no such breakpoint</message></error></response>`)
+	m := newMCP(s)
+
+	resp := m.handle(rpcReq{ID: json.RawMessage(`1`), Method: "tools/call", Params: json.RawMessage(`{"name":"breakpoint_remove","arguments":{"id":"q1"}}`)})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("breakpoint_remove must return a tool result, got %+v", resp)
+	}
+	res, ok := resp.Result.(map[string]any)
+	if !ok || res["isError"] != true {
+		t.Fatalf("breakpoint_remove must return isError: true, got %+v", resp)
+	}
+	if text := fmt.Sprint(res["content"]); !strings.Contains(text, "breakpoint_remove error 205: no such breakpoint") {
+		t.Fatalf("breakpoint_remove result = %v; want the engine code and message", res)
+	}
+	if len(s.pending) != 1 || s.pending[0].id != "1001" || s.pending[0].qid != "q1" {
+		t.Fatalf("pending = %+v; an engine error must retain the local breakpoint", s.pending)
+	}
+}
+
+func TestToolsCallBreakpointRemoveEmptyID(t *testing.T) {
+	s := newSession("/l", "/d")
+	for _, file := range []string{"a.php", "b.php"} {
+		if _, err := s.SetBreakpoint(file, 3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := newMCP(s)
+
+	for _, arguments := range []string{`{}`, `{"id":""}`} {
+		resp := m.handle(rpcReq{ID: json.RawMessage(`1`), Method: "tools/call", Params: json.RawMessage(`{"name":"breakpoint_remove","arguments":` + arguments + `}`)})
+		if resp == nil || resp.Error != nil {
+			t.Fatalf("breakpoint_remove must return a tool result, got %+v", resp)
+		}
+		res, ok := resp.Result.(map[string]any)
+		if !ok || res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "id required") {
+			t.Fatalf("breakpoint_remove result = %v; want an id required tool error", resp)
+		}
+		if len(s.pending) != 2 {
+			t.Fatalf("pending = %+v; an empty or missing id must not change state", s.pending)
+		}
+	}
+}
+
 func TestToolsCallListenBadInit(t *testing.T) {
 	for _, length := range []string{"-1", "999999999999999", "9999999999"} {
 		t.Run(length, func(t *testing.T) {

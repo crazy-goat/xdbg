@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -214,7 +215,7 @@ func TestRawLockedWellFormedResponse(t *testing.T) {
 	}
 }
 
-func TestRawLockedErrorResponse(t *testing.T) {
+func TestRawLockedReturnsDBGpError(t *testing.T) {
 	s, eng := newActivePipe(t)
 	response := `<response command="run" status="break"><message filename="file:///d/a.php" lineno="9"/>` +
 		`<error code="5"><message><![CDATA[ command is not available ]]></message></error></response>`
@@ -259,7 +260,7 @@ func TestBreakpointListNoSessionShowsQueued(t *testing.T) {
 	}
 
 	text, err := s.BreakpointList()
-	want := "queued /home/dev/app/src/Foo.php:10\nqueued /home/dev/app/src/Bar.php:20\n"
+	want := "queued q1 /home/dev/app/src/Foo.php:10\nqueued q2 /home/dev/app/src/Bar.php:20\n"
 	if err != nil || text != want {
 		t.Fatalf("BreakpointList = %q, %v; want %q without an error", text, err, want)
 	}
@@ -277,13 +278,13 @@ func TestBreakpointListNoSessionEmpty(t *testing.T) {
 func TestBreakpointListNoSessionRetainsRejected(t *testing.T) {
 	s := newSession("/home/dev/app", "/var/www/app")
 	s.pending = []bp{
-		{file: "/var/www/app/a.php", line: 3, id: "1"},
-		{file: "/var/www/app/b.php", line: 5, err: "breakpoint_set error 200: breakpoint could not be set"},
+		{file: "/var/www/app/a.php", line: 3, id: "1", qid: "q1"},
+		{file: "/var/www/app/b.php", line: 5, qid: "q2", err: "breakpoint_set error 200: breakpoint could not be set"},
 	}
 
 	text, err := s.BreakpointList()
-	want := "queued /home/dev/app/a.php:3\n" +
-		"rejected /home/dev/app/b.php:5: breakpoint_set error 200: breakpoint could not be set\n"
+	want := "queued q1 /home/dev/app/a.php:3\n" +
+		"rejected q2 /home/dev/app/b.php:5: breakpoint_set error 200: breakpoint could not be set\n"
 	if err != nil || text != want {
 		t.Fatalf("BreakpointList = %q, %v; want %q without an error", text, err, want)
 	}
@@ -312,13 +313,13 @@ func TestBreakpointListWithSessionMergesQueued(t *testing.T) {
 		t.Fatalf("adopt: conn nil = %v, pending = %+v; want an applied breakpoint", s.conn == nil, s.pending)
 	}
 	s.pending = append(s.pending,
-		bp{file: "/var/www/app/b.php", line: 5},
-		bp{file: "/var/www/app/c.php", line: 7, err: "breakpoint_set error 200: breakpoint could not be set"},
+		bp{file: "/var/www/app/b.php", line: 5, qid: "q2"},
+		bp{file: "/var/www/app/c.php", line: 7, qid: "q3", err: "breakpoint_set error 200: breakpoint could not be set"},
 	)
 
 	text, err := s.BreakpointList()
-	want := "id=1 enabled /home/dev/app/a.php:3\nqueued /home/dev/app/b.php:5\n" +
-		"rejected /home/dev/app/c.php:7: breakpoint_set error 200: breakpoint could not be set\n"
+	want := "id=1 enabled /home/dev/app/a.php:3\nqueued q2 /home/dev/app/b.php:5\n" +
+		"rejected q3 /home/dev/app/c.php:7: breakpoint_set error 200: breakpoint could not be set\n"
 	if err != nil || text != want {
 		t.Fatalf("BreakpointList = %q, %v; want %q without an error or duplicate", text, err, want)
 	}
@@ -345,6 +346,334 @@ func TestBreakpointListEngineError(t *testing.T) {
 	text, err := s.BreakpointList()
 	if err == nil || err.Error() != "breakpoint_list error 5: command is not available" || text != "" {
 		t.Fatalf("BreakpointList = %q, %v; want the engine error, not queued breakpoints", text, err)
+	}
+}
+
+func TestBreakpointRemoveQueuedNoSession(t *testing.T) {
+	s := newSession("/home/dev/app", "/var/www/app")
+	first, err := s.SetBreakpoint("src/Foo.php", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.SetBreakpoint("src/Bar.php", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != "breakpoint queued q1 /var/www/app/src/Foo.php:10 (applied on next session)" ||
+		second != "breakpoint queued q2 /var/www/app/src/Bar.php:20 (applied on next session)" {
+		t.Errorf("SetBreakpoint replies = %q, %q; want distinct local handles", first, second)
+	}
+
+	text, err := s.BreakpointRemove("q1")
+	if err != nil || text != "removed q1" {
+		t.Fatalf("BreakpointRemove = %q, %v; want removed q1 without a session", text, err)
+	}
+	if !strings.Contains(s.Status(), "breakpoints=1") || len(s.pending) != 1 ||
+		s.pending[0].file != "/var/www/app/src/Bar.php" || s.pending[0].line != 20 {
+		t.Fatalf("Status = %q, pending = %+v; want only the second breakpoint", s.Status(), s.pending)
+	}
+	text, err = s.BreakpointList()
+	if err != nil || text != "queued q2 /home/dev/app/src/Bar.php:20\n" {
+		t.Fatalf("BreakpointList = %q, %v; want the remaining handle and host path", text, err)
+	}
+}
+
+func TestBreakpointRemoveEmptyIDNoStateChange(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("active=%v", active), func(t *testing.T) {
+			s := newSession("/l", "/d")
+			for _, file := range []string{"a.php", "b.php"} {
+				if _, err := s.SetBreakpoint(file, 3); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if active {
+				eng, conn := newPipe(t)
+				s.conn, s.r, s.state = conn, bufio.NewReader(conn), "started"
+				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+				go eng.respond(`<response command="breakpoint_remove"/>`)
+			}
+			before, status, tx := slices.Clone(s.pending), s.Status(), s.tx
+
+			text, err := s.BreakpointRemove("")
+			if err == nil || err.Error() != "id required" || text != "" {
+				t.Errorf("BreakpointRemove = %q, %v; want an id required error", text, err)
+			}
+			if !slices.Equal(s.pending, before) || s.Status() != status || s.tx != tx {
+				t.Fatalf("Status = %q, pending = %+v, tx = %d; empty id must not change state", s.Status(), s.pending, s.tx)
+			}
+		})
+	}
+}
+
+func TestBreakpointRemoveEngineErrorKeepsState(t *testing.T) {
+	for _, id := range []string{"1001", "q1", "9001"} {
+		t.Run(id, func(t *testing.T) {
+			engineID := id
+			if id == "q1" {
+				engineID = "1001"
+			}
+			eng, conn := newPipe(t)
+			s := newSession("/l", "/d")
+			if _, err := s.SetBreakpoint("a.php", 3); err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			command := make(chan string, 1)
+			go func() {
+				eng.send(xmlProlog + `<init fileuri="file:///d/index.php"/>`)
+				eng.respond(
+					`<response command="feature_set" success="1"/>`,
+					`<response command="feature_set" success="1"/>`,
+					`<response command="feature_set" success="1"/>`,
+					`<response command="breakpoint_set" id="1001"/>`,
+				)
+				line, err := bufio.NewReader(eng.conn).ReadString(0)
+				if err != nil {
+					t.Errorf("engine read: %v", err)
+					return
+				}
+				command <- line
+				eng.send(xmlProlog + `<response command="breakpoint_remove"><error code="205"><message>no such breakpoint</message></error></response>`)
+				eng.respond(`<response command="breakpoint_list"><breakpoint id="1001" state="enabled" filename="file:///d/a.php" lineno="3"/></response>`)
+			}()
+			s.adopt(conn)
+			if len(s.pending) != 1 || s.pending[0].id != "1001" || s.conn == nil {
+				t.Fatalf("adopt: conn nil = %v, pending = %+v; want an applied breakpoint", s.conn == nil, s.pending)
+			}
+			before, status := slices.Clone(s.pending), s.Status()
+
+			text, err := s.BreakpointRemove(id)
+			if err == nil || err.Error() != "breakpoint_remove error 205: no such breakpoint" || text != "" {
+				t.Fatalf("BreakpointRemove = %q, %v; want the engine error", text, err)
+			}
+			if !slices.Equal(s.pending, before) || s.Status() != status {
+				t.Fatalf("Status = %q, pending = %+v; an engine error must retain the local breakpoint", s.Status(), s.pending)
+			}
+			select {
+			case line := <-command:
+				if line != "breakpoint_remove -i 5 -d "+engineID+"\x00" {
+					t.Fatalf("engine command = %q; want engine id %s", line, engineID)
+				}
+			default:
+				t.Fatal("the engine did not receive breakpoint_remove")
+			}
+			text, err = s.BreakpointList()
+			if err != nil || text != "id=1001 enabled /l/a.php:3\n" {
+				t.Fatalf("BreakpointList = %q, %v; want the retained engine breakpoint", text, err)
+			}
+		})
+	}
+}
+
+func TestBreakpointRemoveWireErrorKeepsState(t *testing.T) {
+	for _, failure := range []string{"write", "read", "XML"} {
+		t.Run(failure, func(t *testing.T) {
+			s, eng := newActivePipe(t)
+			s.pending = []bp{{file: "/d/a.php", line: 3, id: "1001", qid: "q1"}}
+			before := slices.Clone(s.pending)
+			switch failure {
+			case "write":
+				_ = eng.conn.Close()
+			case "read":
+				go func() {
+					if _, err := bufio.NewReader(eng.conn).ReadString(0); err != nil {
+						return
+					}
+					_ = eng.conn.Close()
+				}()
+			case "XML":
+				go eng.respond(`<response command="breakpoint_remove"`)
+			}
+
+			text, err := s.BreakpointRemove("q1")
+			if err == nil || text != "" || !slices.Equal(s.pending, before) {
+				t.Fatalf("BreakpointRemove = %q, %v; pending = %+v; a wire error must retain the local breakpoint", text, err, s.pending)
+			}
+		})
+	}
+}
+
+func TestBreakpointRemoveModes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		id       string
+		engineID string
+		active   bool
+		applied  bool
+		rejected bool
+		wantErr  string
+		wantKept bool
+	}{
+		{name: "queued with session", id: "q1", active: true},
+		{name: "rejected with session", id: "q1", active: true, rejected: true},
+		{name: "applied by engine id", id: "1001", engineID: "1001", active: true, applied: true},
+		{name: "applied by handle", id: "q1", engineID: "1001", active: true, applied: true},
+		{name: "applied without session by engine id", id: "1001", applied: true},
+		{name: "applied without session by handle", id: "q1", applied: true},
+		{name: "unknown with session", id: "9001", engineID: "9001", active: true, applied: true, wantKept: true},
+		{name: "unknown without session", id: "9001", applied: true, wantErr: "no active session", wantKept: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSession("/l", "/d")
+			if _, err := s.SetBreakpoint("a.php", 3); err != nil {
+				t.Fatal(err)
+			}
+			if tc.applied {
+				s.pending[0].id = "1001"
+			}
+			if tc.rejected {
+				s.pending[0].err = "breakpoint_set error 200: breakpoint could not be set"
+			}
+			command := make(chan string, 1)
+			if tc.active {
+				eng, conn := newPipe(t)
+				s.conn, s.r, s.state = conn, bufio.NewReader(conn), "started"
+				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+				go func() {
+					line, err := bufio.NewReader(eng.conn).ReadString(0)
+					if err != nil {
+						return
+					}
+					command <- line
+					eng.send(xmlProlog + `<response command="breakpoint_remove"/>`)
+				}()
+			}
+			var wantPending []bp
+			if tc.wantKept {
+				wantPending = slices.Clone(s.pending)
+			}
+
+			text, err := s.BreakpointRemove(tc.id)
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr || text != "" {
+					t.Fatalf("BreakpointRemove = %q, %v; want %q", text, err, tc.wantErr)
+				}
+			} else if err != nil || text != "removed "+tc.id {
+				t.Fatalf("BreakpointRemove = %q, %v; want removed %s", text, err, tc.id)
+			}
+			if !slices.Equal(s.pending, wantPending) {
+				t.Fatalf("pending = %+v; want %+v", s.pending, wantPending)
+			}
+			if tc.engineID == "" {
+				if s.tx != 0 {
+					t.Fatalf("tx = %d; local removal must not send an engine command", s.tx)
+				}
+			} else {
+				select {
+				case line := <-command:
+					if line != "breakpoint_remove -i 1 -d "+tc.engineID+"\x00" {
+						t.Fatalf("engine command = %q; want engine id %s", line, tc.engineID)
+					}
+				default:
+					t.Fatal("the engine did not receive breakpoint_remove")
+				}
+			}
+		})
+	}
+}
+
+func TestBreakpointHandlesNotReused(t *testing.T) {
+	s := newSession("/l", "/d")
+	for _, file := range []string{"a.php", "b.php"} {
+		if _, err := s.SetBreakpoint(file, 3); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.BreakpointRemove("q1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetBreakpoint("c.php", 3); err != nil {
+		t.Fatal(err)
+	}
+	text, err := s.BreakpointList()
+	if err != nil || text != "queued q2 /l/b.php:3\nqueued q3 /l/c.php:3\n" {
+		t.Fatalf("BreakpointList = %q, %v; handles must stay stable after removal", text, err)
+	}
+	if _, err := s.BreakpointClearAll(); err != nil {
+		t.Fatal(err)
+	}
+	text, err = s.SetBreakpoint("d.php", 3)
+	if err != nil || text != "breakpoint queued q4 /d/d.php:3 (applied on next session)" {
+		t.Fatalf("SetBreakpoint = %q, %v; a cleared handle must not be reused", text, err)
+	}
+}
+
+func TestBreakpointHandleAcrossSessions(t *testing.T) {
+	s := newSession("/l", "/d")
+	if _, err := s.SetBreakpoint("a.php", 3); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"1001", "2001"} {
+		eng, conn := newPipe(t)
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		command := make(chan string, 1)
+		go func() {
+			eng.send(xmlProlog + `<init fileuri="file:///d/index.php"/>`)
+			eng.respond(
+				`<response command="feature_set" success="1"/>`,
+				`<response command="feature_set" success="1"/>`,
+				`<response command="feature_set" success="1"/>`,
+				`<response command="breakpoint_set" id="`+id+`"/>`,
+			)
+			if i == 0 {
+				eng.respond(`<response command="detach"/>`)
+				return
+			}
+			line, err := bufio.NewReader(eng.conn).ReadString(0)
+			if err != nil {
+				t.Errorf("engine read: %v", err)
+				return
+			}
+			command <- line
+			eng.send(xmlProlog + `<response command="breakpoint_remove"/>`)
+		}()
+		s.adopt(conn)
+		if len(s.pending) != 1 || s.pending[0].qid != "q1" || s.pending[0].id != id {
+			t.Fatalf("pending = %+v; want stable handle q1 and current engine id %s", s.pending, id)
+		}
+		if i == 0 {
+			if _, err := s.Detach(); err != nil {
+				t.Fatal(err)
+			}
+			text, err := s.BreakpointList()
+			if err != nil || text != "queued q1 /l/a.php:3\n" {
+				t.Fatalf("BreakpointList = %q, %v; want the same handle after detach", text, err)
+			}
+			continue
+		}
+
+		text, err := s.BreakpointRemove("q1")
+		if err != nil || text != "removed q1" || len(s.pending) != 0 {
+			t.Fatalf("BreakpointRemove = %q, %v; pending = %+v; want removal by the original handle", text, err, s.pending)
+		}
+		select {
+		case line := <-command:
+			if line != "breakpoint_remove -i 5 -d 2001\x00" {
+				t.Fatalf("engine command = %q; want the current engine id 2001", line)
+			}
+		default:
+			t.Fatal("the engine did not receive breakpoint_remove")
+		}
+	}
+}
+
+func TestBreakpointClearAllBestEffort(t *testing.T) {
+	s, eng := newActivePipe(t)
+	s.pending = []bp{
+		{file: "/d/a.php", line: 3, qid: "q1"},
+		{file: "/d/b.php", line: 4, id: "1001", qid: "q2"},
+		{file: "/d/c.php", line: 5, id: "1002", qid: "q3"},
+		{file: "/d/d.php", line: 6, qid: "q4", err: "breakpoint_set error 200: breakpoint could not be set"},
+	}
+	go eng.respond(
+		`<response command="breakpoint_remove"><error code="205"><message>no such breakpoint</message></error></response>`,
+		`<response command="breakpoint_remove"/>`,
+	)
+
+	text, err := s.BreakpointClearAll()
+	if err != nil || text != "cleared 4 breakpoint(s)" || len(s.pending) != 0 || s.tx != 2 {
+		t.Fatalf("BreakpointClearAll = %q, %v; pending = %+v, tx = %d; want best-effort removal of all entries", text, err, s.pending, s.tx)
 	}
 }
 
@@ -434,7 +763,9 @@ func TestAdoptRejectedPendingBreakpoint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			eng, conn := newPipe(t)
 			s := newSession("/l", "/d")
-			s.pending = []bp{{file: "/d/a.php", line: 3}}
+			if _, err := s.SetBreakpoint("a.php", 3); err != nil {
+				t.Fatal(err)
+			}
 			responses := []string{
 				`<response command="feature_set" success="1"/>`,
 				`<response command="feature_set"><error code="3"><message>invalid arguments</message></error></response>`,
@@ -442,7 +773,9 @@ func TestAdoptRejectedPendingBreakpoint(t *testing.T) {
 				`<response command="breakpoint_set"><error code="200"><message>breakpoint could not be set</message></error></response>`,
 			}
 			if tc.inner != "" {
-				s.pending = append(s.pending, bp{file: "/d/b.php", line: 4})
+				if _, err := s.SetBreakpoint("b.php", 4); err != nil {
+					t.Fatal(err)
+				}
 				responses = append(responses, `<response command="breakpoint_set" id="7"/>`)
 			}
 			responses = append(responses, `<response command="breakpoint_list">`+tc.inner+`</response>`)
@@ -475,7 +808,7 @@ func TestAdoptRejectedPendingBreakpoint(t *testing.T) {
 				t.Fatalf("the rejected breakpoint was not logged: %q", logs.String())
 			}
 			text, err := s.BreakpointList()
-			if err != nil || !strings.Contains(text, "rejected /l/a.php:3") || !strings.Contains(text, "200: breakpoint could not be set") || strings.Contains(text, "queued /l/a.php:3") {
+			if err != nil || !strings.Contains(text, "rejected q1 /l/a.php:3") || !strings.Contains(text, "200: breakpoint could not be set") || strings.Contains(text, "queued q1 /l/a.php:3") {
 				t.Fatalf("BreakpointList = %q, %v; want the rejected breakpoint and its error", text, err)
 			}
 			if tc.inner != "" && !strings.Contains(text, "id=7 enabled /l/b.php:4") {

@@ -240,6 +240,9 @@ id is returned. If no session is active, the breakpoint is queued and applied
 automatically on the next session (the next `xdbg_request` or
 `xdbg_run_command`). Multiple breakpoints can be set before triggering the
 request; xdbg sends them to the engine when it connects.
+The queued reply includes a stable local handle, such as `q1`, `q2`, or `q3`.
+Use this handle to remove the breakpoint without an active session.
+The handle stays the same across sessions and xdbg does not reuse it in the same process.
 If the engine rejects a live breakpoint, the tool returns an error and does not store it.
 If the engine rejects a queued breakpoint, xdbg logs the rejection to stderr and marks it as `rejected`.
 
@@ -248,15 +251,21 @@ Lists all breakpoints known to the engine, with their ids, state
 (`enabled`/`disabled`), host path, and line.
 With an active session, it also lists queued breakpoints that have no engine id.
 When no session is active, it lists the local queue instead.
-Queued entries appear as `queued <file>:<line>`. An empty list returns `(none)`.
+Queued entries appear as `queued <handle> <file>:<line>`, for example `queued q1 /home/dev/app/src/Foo.php:10`.
+An empty list returns `(none)`.
 Use it to check breakpoints before a request. Safe to call any time.
-Rejected queued breakpoints appear as `rejected <file>:<line>: <error>` with or without an active session.
+Rejected queued breakpoints appear as `rejected <handle> <file>:<line>: <error>` with or without an active session.
 
 ### `xdbg_breakpoint_remove(string id)`
-`id` is the breakpoint id returned by `xdbg_set_breakpoint` or shown by
-`xdbg_breakpoint_list`. Removes a single breakpoint — both from the engine
-(if a session is active) and from the local queue. Returns `removed <id>` on
-success. Call `xdbg_breakpoint_list` first to find the id.
+`id` is an engine id or a local handle from `xdbg_set_breakpoint` or `xdbg_breakpoint_list`.
+To remove a queued or rejected breakpoint without a session, pass its handle, for example `{id:"q1"}`.
+The handle also works after xdbg applies the breakpoint to an engine.
+With an active session, xdbg removes an applied breakpoint from the engine before it removes the local entry.
+If the engine call fails, the tool returns an error and keeps the local entry.
+Without an active session, xdbg removes a known breakpoint only from the local queue.
+The tool rejects an empty id without a state change.
+An unknown id goes to the engine if a session is active; otherwise, it returns an error.
+Returns `removed <id>` on success. Call `xdbg_breakpoint_list` first to find the id or handle.
 
 ### `xdbg_breakpoint_clear()`
 Removes every breakpoint: queued (not yet applied) and applied (active in

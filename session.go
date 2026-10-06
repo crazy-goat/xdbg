@@ -23,6 +23,7 @@ type bp struct {
 	file string // container path
 	line int
 	id   string // assigned by the engine on apply
+	qid  string // stable local handle
 	err  string // why the last apply failed
 }
 
@@ -35,6 +36,7 @@ type session struct {
 	file     string // current location, host path
 	line     int
 	pending  []bp
+	nextQID  int           // never reset when breakpoints are removed or cleared
 	ready    chan struct{} // closed on each adopt; lets ListenWait/DoRequest await a connection
 	adoptErr error         // why the last adopt failed (nil on success); read by the waiters after ready closes
 
@@ -418,7 +420,8 @@ func (s *session) SetBreakpoint(file string, line int) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cpath := s.toContainer(file)
-	b := bp{file: cpath, line: line}
+	s.nextQID++
+	b := bp{file: cpath, line: line, qid: "q" + strconv.Itoa(s.nextQID)}
 	if s.conn != nil && (s.state == "started" || s.state == "break") {
 		r, _, err := s.rawLocked("breakpoint_set", fmt.Sprintf("-t line -f %s -n %d", fileURI(cpath), line))
 		if err != nil {
@@ -429,7 +432,7 @@ func (s *session) SetBreakpoint(file string, line int) (string, error) {
 		return fmt.Sprintf("breakpoint set id=%s %s:%d", b.id, cpath, line), nil
 	}
 	s.pending = append(s.pending, b)
-	return fmt.Sprintf("breakpoint queued %s:%d (applied on next session)", cpath, line), nil
+	return fmt.Sprintf("breakpoint queued %s %s:%d (applied on next session)", b.qid, cpath, line), nil
 }
 
 func (s *session) BreakpointList() (string, error) {
@@ -447,9 +450,9 @@ func (s *session) BreakpointList() (string, error) {
 	}
 	for _, p := range s.pending {
 		if p.err != "" {
-			fmt.Fprintf(&b, "rejected %s:%d: %s\n", s.toHost(p.file), p.line, p.err)
+			fmt.Fprintf(&b, "rejected %s %s:%d: %s\n", p.qid, s.toHost(p.file), p.line, p.err)
 		} else if s.conn == nil || p.id == "" {
-			fmt.Fprintf(&b, "queued %s:%d\n", s.toHost(p.file), p.line)
+			fmt.Fprintf(&b, "queued %s %s:%d\n", p.qid, s.toHost(p.file), p.line)
 		}
 	}
 	if b.Len() == 0 {
@@ -459,16 +462,28 @@ func (s *session) BreakpointList() (string, error) {
 }
 
 func (s *session) BreakpointRemove(id string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("id required")
+	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	index, engineID := -1, id
 	for i, p := range s.pending {
-		if p.id == id {
-			s.pending = append(s.pending[:i], s.pending[i+1:]...)
+		if p.qid == id || p.id == id {
+			index, engineID = i, p.id
 			break
 		}
 	}
-	s.mu.Unlock()
-	if _, _, err := s.cmd("breakpoint_remove", "-d "+id); err != nil {
-		return "", err
+	if index == -1 && s.conn == nil {
+		return "", fmt.Errorf("no active session")
+	}
+	if s.conn != nil && engineID != "" {
+		if _, _, err := s.rawLocked("breakpoint_remove", "-d "+engineID); err != nil {
+			return "", err
+		}
+	}
+	if index != -1 {
+		s.pending = append(s.pending[:index], s.pending[index+1:]...)
 	}
 	return "removed " + id, nil
 }

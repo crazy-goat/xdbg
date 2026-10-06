@@ -61,7 +61,7 @@ func newMCP(s *session) *mcpServer {
 		{"status", "Current debug session state and location.", obj(nil)},
 		{"set_breakpoint", "Set a line breakpoint. `file` is a HOST path (absolute or project-relative); it is auto-translated to the container path. Queued if no session is active yet.", obj(map[string]any{"file": prop("string", "host path, e.g. src/Foo/Bar.php"), "line": prop("integer", "1-based line")}, "file", "line")},
 		{"breakpoint_list", "List engine, queued, and rejected breakpoints (host paths). Safe with or without an active session.", obj(nil)},
-		{"breakpoint_remove", "Remove a breakpoint by id.", obj(map[string]any{"id": prop("string", "breakpoint id")}, "id")},
+		{"breakpoint_remove", "Remove a breakpoint by engine id or local handle (e.g. q1). Use the handle from set_breakpoint or breakpoint_list to remove queued breakpoints without a session. Engine errors leave the local queue unchanged.", obj(map[string]any{"id": prop("string", "engine id or local handle (e.g. q1)")}, "id")},
 		{"breakpoint_clear", "Clear ALL breakpoints (queued and applied). Safe with or without an active session.", obj(nil)},
 		{"request", "Fire an HTTP request at the app (any method, headers, body) and run to completion. Does NOT pause at breakpoints — use listen first, then trigger the request separately to debug interactively.", obj(map[string]any{
 			"url":       prop("string", "full URL, e.g. http://127.0.0.1:8090/api/foo"),

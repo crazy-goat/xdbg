@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `breakpoint_remove` now accepts stable local handles (`q1`, `q2`, ...) to remove queued breakpoints without a session. Queued replies and queued or rejected list entries show the handles. Empty ids return an error without a state change. Failed engine removal leaves the local queue unchanged; `breakpoint_clear` remains best-effort (#29)
 - `example/bin/set-xdebug-on` and `set-xdebug-off` now call the `xdebug-on` / `xdebug-off` scripts in the container and fail when the change fails (#59)
 - `request_from_files` now accepts JSON headers files on one line or multiple lines. JSON files reject non-string values, including `null`, but accept empty strings. The line format rejects empty or invalid header names. Both request tools now honor `Host` headers, regardless of case. HTTP client errors return immediately instead of a misleading Xdebug timeout. The headers file descriptions now agree with the supported formats (#30)
 - `breakpoint_list` now lists queued breakpoints as host paths without an active session and returns `(none)` for an empty list. With an active session, it lists engine breakpoints and queued entries without engine ids. Rejected entries retain their error text in both cases (#28)
