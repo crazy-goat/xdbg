@@ -24,21 +24,21 @@ on your `PATH`. The release assets are:
 ```bash
 # Example: macOS on Apple silicon, vX.Y.Z
 version=vX.Y.Z
-curl -fsSL -o /usr/local/bin/xdbg \
-  "https://github.com/crazy-goat/xdbg/releases/download/${version}/xdbg_darwin_arm64"
-chmod +x /usr/local/bin/xdbg
+asset=xdbg_darwin_arm64
+base="https://github.com/crazy-goat/xdbg/releases/download/${version}"
+
+curl -fsSL -o "$asset" "${base}/${asset}"
+curl -fsSL -o checksums.txt "${base}/checksums.txt"
+grep " $asset\$" checksums.txt | sha256sum -c -   # macOS: shasum -a 256 -c -
+chmod +x "$asset"
+sudo install -m 0755 "$asset" /usr/local/bin/xdbg
 ```
 
-Every release also ships a `checksums.txt` with the SHA-256 of each binary.
-Verify the download before running it:
-
-```bash
-curl -fsSL -o checksums.txt \
-  "https://github.com/crazy-goat/xdbg/releases/download/${version}/checksums.txt"
-grep "xdbg_darwin_arm64" checksums.txt | sha256sum -c -
-```
-
-(`sha256sum -c -` reads the checksum line from stdin; on macOS use `shasum -a 256 -c -`.)
+Every release ships a `checksums.txt` with the SHA-256 of each binary; the
+`grep | sha256sum -c -` step verifies the download before you install it
+(`sha256sum -c -` reads the matching checksum line from stdin and looks for the
+asset in the current directory, which is why the file is downloaded under its
+release name first).
 
 ### Option B — `go install`
 
