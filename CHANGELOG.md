@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Unit tests for DBGp packet framing and XML parsing (`dbgp.go`), property decoding/summarizing, and the `--local-root` / `--docker-root` path translation (`session.go`), including malformed and truncated input (#3)
 - `xdbg --version` prints the release version, and the MCP `serverInfo` reports the same value; `release.yaml` injects it from the tag with `-X main.version` (local builds report `dev`) (#4)
 - `install.md` documents installing from the prebuilt release binaries (linux/darwin, amd64/arm64) and verifying them with `checksums.txt` (#5)
 - `bin/lint.sh` runs gofmt, `go vet`, golangci-lint and shellcheck; `--fix` applies gofmt first. CI has a single `lint` job that runs it; `dbgp.go` is now gofmt-formatted (#11)
