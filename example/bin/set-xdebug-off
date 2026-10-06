@@ -1,6 +1,4 @@
 #!/bin/sh
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR" || exit 1
-docker compose exec -T php sed -i 's/xdebug.mode=debug/xdebug.mode=off/' /usr/local/etc/php/conf.d/xdebug.ini
-docker compose exec -T php kill -USR2 1
-echo "Xdebug disabled"
+exec docker compose exec -T php xdebug-off
