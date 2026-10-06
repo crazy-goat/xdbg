@@ -108,7 +108,7 @@ make install          # builds and copies to ~/.local/bin/xdbg
 
 ### Prerequisites
 
-- Go 1.21+ (only needed for `go install` / `make`)
+- Go 1.26+ (only needed for `go install` / `make`)
 - Docker (or any container runtime) running your PHP app
 - Xdebug installed **inside** the container (the engine), enabled on demand
 

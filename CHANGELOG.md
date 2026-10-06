@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `install.md` documents installing from the prebuilt release binaries (linux/darwin, amd64/arm64) and verifying them with `checksums.txt` (#5)
 - `bin/lint.sh` runs gofmt, `go vet`, golangci-lint and shellcheck; `--fix` applies gofmt first. CI has a single `lint` job that runs it; `dbgp.go` is now gofmt-formatted (#11)
 - `docs/workflow.md` and `docs/release-workflow.md` follow the shared crazy-goat templates; project commands live in the new `AGENTS.md` (#1)
 - `bin/` has the shared issue and worktree helper scripts, plus `worktree-setup.sh` and `worktree-teardown.sh` (#1)
