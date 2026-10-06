@@ -54,6 +54,43 @@ func TestToolsCallValidParams(t *testing.T) {
 	}
 }
 
+func TestInitializeServerInfo(t *testing.T) {
+	m := newMCP(newSession("/l", "/d"))
+	serverInfo := func() map[string]any {
+		t.Helper()
+		resp := m.handle(rpcReq{ID: json.RawMessage(`1`), Method: "initialize"})
+		if resp.Error != nil || resp.Result == nil {
+			t.Fatalf("initialize failed: %+v", resp)
+		}
+		res, ok := resp.Result.(map[string]any)
+		if !ok {
+			t.Fatalf("result is not an object: %T", resp.Result)
+		}
+		info, ok := res["serverInfo"].(map[string]any)
+		if !ok {
+			t.Fatalf("serverInfo is not an object: %T", res["serverInfo"])
+		}
+		return info
+	}
+
+	info := serverInfo()
+	if info["name"] != "xdbg" {
+		t.Fatalf("serverInfo.name = %v, want xdbg", info["name"])
+	}
+	if info["version"] != version {
+		t.Fatalf("serverInfo.version = %v, want the package version %q", info["version"], version)
+	}
+
+	// The version is injected at build time (-ldflags -X main.version); the
+	// serverInfo must read it rather than a hardcoded string.
+	old := version
+	version = "1.2.3"
+	t.Cleanup(func() { version = old })
+	if got := serverInfo()["version"]; got != "1.2.3" {
+		t.Fatalf("serverInfo.version = %v, want the injected 1.2.3", got)
+	}
+}
+
 func TestServeIORepliesPerLine(t *testing.T) {
 	m := newMCP(newSession("/l", "/d"))
 	in := `{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n" +
