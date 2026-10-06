@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,11 +52,15 @@ type session struct {
 }
 
 func newSession(localRoot, dockerRoot string) *session {
+	localRoot = path.Clean(localRoot)
+	if dockerRoot != "" {
+		dockerRoot = path.Clean(dockerRoot)
+	}
 	return &session{
 		state:      "no session",
 		ready:      make(chan struct{}),
-		localRoot:  strings.TrimRight(localRoot, "/"),
-		dockerRoot: strings.TrimRight(dockerRoot, "/"),
+		localRoot:  localRoot,
+		dockerRoot: dockerRoot,
 	}
 }
 
@@ -342,25 +347,40 @@ func (s *session) cmd(name, args string) (*xResp, string, error) {
 
 // --- path translation -------------------------------------------------------
 
+// under reports whether p equals root or is inside root at a path boundary.
+func under(p, root string) bool {
+	if root == "/" {
+		return path.IsAbs(p)
+	}
+	return root != "" && (p == root || strings.HasPrefix(p, root+"/"))
+}
+
 // toContainer maps a host (absolute or project-relative) path to the container path.
 func (s *session) toContainer(p string) string {
+	if s.dockerRoot == "" {
+		if path.IsAbs(p) {
+			return p
+		}
+		return path.Join(s.localRoot, p)
+	}
 	switch {
-	case strings.HasPrefix(p, s.dockerRoot):
+	// When both roots match, the more specific root takes precedence.
+	case under(p, s.localRoot) && (!under(p, s.dockerRoot) || len(s.localRoot) > len(s.dockerRoot)):
+		return path.Join(s.dockerRoot, strings.TrimPrefix(p, s.localRoot))
+	case under(p, s.dockerRoot):
 		return p
-	case strings.HasPrefix(p, s.localRoot):
-		return s.dockerRoot + p[len(s.localRoot):]
-	case strings.HasPrefix(p, "/"):
+	case path.IsAbs(p):
 		return p // some other absolute path; pass through
 	default:
-		return s.dockerRoot + "/" + strings.TrimLeft(p, "/")
+		return path.Join(s.dockerRoot, p)
 	}
 }
 
 // toHost maps a container fileuri/path back to a host path for display.
 func (s *session) toHost(fileuri string) string {
 	p := strings.TrimPrefix(fileuri, "file://")
-	if strings.HasPrefix(p, s.dockerRoot) {
-		return s.localRoot + p[len(s.dockerRoot):]
+	if under(p, s.dockerRoot) {
+		return path.Join(s.localRoot, strings.TrimPrefix(p, s.dockerRoot))
 	}
 	return p
 }

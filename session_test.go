@@ -328,3 +328,100 @@ func TestAdoptWellFormedInit(t *testing.T) {
 		t.Fatalf("pending breakpoint id = %q, want 7", s.pending[0].id)
 	}
 }
+
+func TestToContainer(t *testing.T) {
+	for name, tc := range map[string]struct{ local, docker, in, want string }{
+		"host absolute":                {"/home/dev/app", "/var/www/app", "/home/dev/app/src/A.php", "/var/www/app/src/A.php"},
+		"project relative":             {"/home/dev/app", "/var/www/app", "src/A.php", "/var/www/app/src/A.php"},
+		"other absolute path":          {"/home/dev/app", "/var/www/app", "/src/A.php", "/src/A.php"},
+		"exact local root":             {"/home/dev/app", "/var/www/app", "/home/dev/app", "/var/www/app"},
+		"already container path":       {"/home/dev/app", "/var/www/app", "/var/www/app/src/A.php", "/var/www/app/src/A.php"},
+		"exact docker root":            {"/home/dev/app", "/var/www/app", "/var/www/app", "/var/www/app"},
+		"other absolute file":          {"/home/dev/app", "/var/www/app", "/etc/php.ini", "/etc/php.ini"},
+		"nested relative":              {"/home/dev/app", "/var/www/app", "src/Foo/Bar.php", "/var/www/app/src/Foo/Bar.php"},
+		"sibling of local root":        {"/home/dev/app", "/var/www/app", "/home/dev/application/x.php", "/home/dev/application/x.php"},
+		"empty docker root relative":   {"/home/dev/app", "", "src/A.php", "/home/dev/app/src/A.php"},
+		"empty docker root absolute":   {"/home/dev/app", "", "/home/dev/app/src/A.php", "/home/dev/app/src/A.php"},
+		"empty docker root outside":    {"/home/dev/app", "", "/usr/share/php/lib.php", "/usr/share/php/lib.php"},
+		"relative dot segments":        {"/home/dev/app", "/var/www/app", "./src/../src/A.php", "/var/www/app/src/A.php"},
+		"local filesystem root":        {"/", "/var/www/app", "/src/A.php", "/var/www/app/src/A.php"},
+		"exact local filesystem root":  {"/", "/var/www/app", "/", "/var/www/app"},
+		"docker filesystem root":       {"/home/dev/app", "/", "/home/dev/app/src/A.php", "/src/A.php"},
+		"empty docker filesystem root": {"/", "", "src/A.php", "/src/A.php"},
+		"nested local root wins":       {"/var/www/app", "/var/www", "/var/www/app/src/A.php", "/var/www/src/A.php"},
+		"nested local root container":  {"/var/www/app", "/var/www", "/var/www/src/A.php", "/var/www/src/A.php"},
+		"nested docker root wins":      {"/var/www", "/var/www/app", "/var/www/app/src/A.php", "/var/www/app/src/A.php"},
+		"nested docker root host":      {"/var/www", "/var/www/app", "/var/www/src/A.php", "/var/www/app/src/A.php"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newSession(tc.local, tc.docker)
+			if got := s.toContainer(tc.in); got != tc.want {
+				t.Fatalf("toContainer(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToHost(t *testing.T) {
+	for name, tc := range map[string]struct{ local, docker, in, want string }{
+		"fileuri":                      {"/home/dev/app", "/var/www/app", "file:///var/www/app/src/A.php", "/home/dev/app/src/A.php"},
+		"plain container path":         {"/home/dev/app", "/var/www/app", "/var/www/app/src/A.php", "/home/dev/app/src/A.php"},
+		"exact docker root":            {"/home/dev/app", "/var/www/app", "file:///var/www/app", "/home/dev/app"},
+		"sibling of docker root":       {"/home/dev/app", "/var/www/app", "file:///var/www/application/x.php", "/var/www/application/x.php"},
+		"outside docker root":          {"/home/dev/app", "/var/www/app", "file:///other/abs.php", "/other/abs.php"},
+		"empty":                        {"/home/dev/app", "/var/www/app", "", ""},
+		"empty docker root outside":    {"/home/dev/app", "", "file:///usr/share/php/lib.php", "/usr/share/php/lib.php"},
+		"empty docker root local":      {"/home/dev/app", "", "file:///home/dev/app/src/A.php", "/home/dev/app/src/A.php"},
+		"empty docker root verbatim":   {"/home/dev/app", "", "file:///home/dev/app/src/../A.php", "/home/dev/app/src/../A.php"},
+		"empty docker root empty":      {"/home/dev/app", "", "", ""},
+		"local filesystem root":        {"/", "/var/www/app", "file:///var/www/app/src/A.php", "/src/A.php"},
+		"docker filesystem root":       {"/home/dev/app", "/", "file:///src/A.php", "/home/dev/app/src/A.php"},
+		"exact docker filesystem root": {"/home/dev/app", "/", "file:///", "/home/dev/app"},
+		"empty docker filesystem root": {"/", "", "file:///usr/share/php/lib.php", "/usr/share/php/lib.php"},
+		"nested local root":            {"/var/www/app", "/var/www", "file:///var/www/src/A.php", "/var/www/app/src/A.php"},
+		"nested docker root":           {"/var/www", "/var/www/app", "file:///var/www/app/src/A.php", "/var/www/src/A.php"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newSession(tc.local, tc.docker)
+			if got := s.toHost(tc.in); got != tc.want {
+				t.Fatalf("toHost(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAdoptBreakpointWithEmptyDockerRoot(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/home/dev/app", "")
+	if _, err := s.SetBreakpoint("src/Foo.php", 10); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	command := make(chan string, 1)
+	go func() {
+		eng.send(xmlProlog + `<init fileuri="file:///home/dev/app/index.php"/>`)
+		r := bufio.NewReader(eng.conn)
+		for i := 0; i < 4; i++ {
+			line, err := r.ReadString(0)
+			if err != nil {
+				t.Errorf("engine read: %v", err)
+				return
+			}
+			if strings.HasPrefix(line, "breakpoint_set ") {
+				command <- line
+			}
+			eng.send(xmlProlog + `<response command="x" id="7"/>`)
+		}
+	}()
+
+	s.adopt(conn)
+
+	select {
+	case line := <-command:
+		if !strings.Contains(line, "-f file:///home/dev/app/src/Foo.php -n 10") {
+			t.Fatalf("breakpoint command = %q, want an absolute file URI", line)
+		}
+	default:
+		t.Fatal("the engine did not receive breakpoint_set")
+	}
+}

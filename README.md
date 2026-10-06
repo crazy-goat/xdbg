@@ -182,12 +182,30 @@ Reconnect MCP in Claude Code. Tools appear as `mcp__xdbg__*`.
 |---|---|---|
 | `--dbg-port` | `9003` | Port Xdebug dials into (the listener binds `0.0.0.0:<port>`) |
 | `--local-root` | — | Host project root (for path translation) |
-| `--docker-root` | — | Container project root (for path translation) |
+| `--docker-root` | `""` (empty) | Container project root; empty disables path translation (host and container paths are the same) |
 | `--xdebug-enable-cmd` | — | Shell command to enable Xdebug in the container |
 | `--xdebug-disable-cmd` | — | Shell command to disable Xdebug in the container |
 | `--xdebug-status-cmd` | — | Shell command to check Xdebug status in the container |
 | `--container-exec` | `docker compose exec -T php` | Prefix for running CLI commands inside the container |
 
+### Path translation
+
+The default empty `--docker-root` means that host and container paths are the same.
+Relative breakpoint paths resolve under `--local-root`, which defaults to the current directory.
+For example, with local root `/home/dev/app`, `src/Foo.php` becomes `/home/dev/app/src/Foo.php`.
+Absolute breakpoint paths stay unchanged.
+Engine paths also stay unchanged after xdbg removes `file://`.
+
+With a non-empty `--docker-root`, xdbg translates only the root itself and paths inside it.
+For example, local root `/home/dev/app` does not match `/home/dev/application/x.php`.
+xdbg cleans both roots with POSIX path rules; `/` remains a valid root.
+
+When roots are nested, the more specific root takes precedence for absolute breakpoint paths.
+A match on the local root translates to the Docker root; a match on the Docker root stays unchanged.
+For example, local `/var/www/app` and Docker `/var/www` translate `/var/www/app/src/A.php` to `/var/www/src/A.php`.
+For the reverse nesting, paths already under the Docker root stay unchanged.
+Use a project-relative breakpoint path if an absolute path can refer to either root.
+Engine paths always translate from the Docker root to the local root.
 
 ### Let the agent toggle Xdebug for you
 

@@ -62,7 +62,7 @@ func main() {
 	f := mcpCmd.Flags()
 	f.StringVar(&dbgPort, "dbg-port", "9003", "DBGp listen port (where container Xdebug connects)")
 	f.StringVar(&localRoot, "local-root", getwdDefault(), "host project root (defaults to CWD)")
-	f.StringVar(&dockerRoot, "docker-root", "", "container project root")
+	f.StringVar(&dockerRoot, "docker-root", "", "container project root (default empty: no path translation; relative paths use local-root)")
 	f.StringVar(&xdebugEnableCmd, "xdebug-enable-cmd", "", `shell command to enable Xdebug in the container, e.g. "docker compose exec -T php set-xdebug-on"`)
 	f.StringVar(&xdebugDisableCmd, "xdebug-disable-cmd", "", `shell command to disable Xdebug in the container`)
 	f.StringVar(&xdebugStatusCmd, "xdebug-status-cmd", "", `shell command to check Xdebug status in the container`)
