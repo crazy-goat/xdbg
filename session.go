@@ -363,11 +363,12 @@ func (s *session) toContainer(p string) string {
 		}
 		return path.Join(s.localRoot, p)
 	}
+	cleanPath := path.Clean(p)
 	switch {
 	// When both roots match, the more specific root takes precedence.
-	case under(p, s.localRoot) && (!under(p, s.dockerRoot) || len(s.localRoot) > len(s.dockerRoot)):
-		return path.Join(s.dockerRoot, strings.TrimPrefix(p, s.localRoot))
-	case under(p, s.dockerRoot):
+	case under(cleanPath, s.localRoot) && (!under(cleanPath, s.dockerRoot) || len(s.localRoot) > len(s.dockerRoot)):
+		return path.Join(s.dockerRoot, strings.TrimPrefix(cleanPath, s.localRoot))
+	case under(cleanPath, s.dockerRoot):
 		return p
 	case path.IsAbs(p):
 		return p // some other absolute path; pass through
@@ -379,8 +380,9 @@ func (s *session) toContainer(p string) string {
 // toHost maps a container fileuri/path back to a host path for display.
 func (s *session) toHost(fileuri string) string {
 	p := strings.TrimPrefix(fileuri, "file://")
-	if under(p, s.dockerRoot) {
-		return path.Join(s.localRoot, strings.TrimPrefix(p, s.dockerRoot))
+	cleanPath := path.Clean(p)
+	if under(cleanPath, s.dockerRoot) {
+		return path.Join(s.localRoot, strings.TrimPrefix(cleanPath, s.dockerRoot))
 	}
 	return p
 }

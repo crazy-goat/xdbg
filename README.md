@@ -198,7 +198,9 @@ Engine paths also stay unchanged after xdbg removes `file://`.
 
 With a non-empty `--docker-root`, xdbg translates only the root itself and paths inside it.
 For example, local root `/home/dev/app` does not match `/home/dev/application/x.php`.
-xdbg cleans both roots with POSIX path rules; `/` remains a valid root.
+xdbg uses POSIX path rules to clean roots and input paths before root comparisons and suffix extraction.
+The root `/` remains valid.
+Paths that do not need translation retain their original spelling.
 
 When roots are nested, the more specific root takes precedence for absolute breakpoint paths.
 A match on the local root translates to the Docker root; a match on the Docker root stays unchanged.
