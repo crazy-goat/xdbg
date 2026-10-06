@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -14,12 +15,20 @@ type xResp struct {
 	Status      string  `xml:"status,attr"`
 	Reason      string  `xml:"reason,attr"`
 	Command     string  `xml:"command,attr"`
+	Success     string  `xml:"success,attr"`
 	ID          string  `xml:"id,attr"`    // breakpoint_set returns the new id here
 	Message     *xMsg   `xml:"message"`    // xdebug:message on break/step
 	Stacks      []xStk  `xml:"stack"`      // stack_get
 	Props       []xProp `xml:"property"`   // context_get / eval / property_get
 	Breakpoints []xBkpt `xml:"breakpoint"` // breakpoint_list
 	Error       *xErr   `xml:"error"`
+}
+
+func (r *xResp) err(cmd string) error {
+	if r == nil || r.Error == nil {
+		return nil
+	}
+	return fmt.Errorf("%s error %s: %s", cmd, r.Error.Code, strings.TrimSpace(r.Error.Message))
 }
 
 type xMsg struct {

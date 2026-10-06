@@ -114,6 +114,29 @@ func TestUnmarshalResponseFields(t *testing.T) {
 	}
 }
 
+func TestXRespError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		resp *xResp
+		want string
+	}{
+		{"nil response", nil, ""},
+		{"no engine error", &xResp{}, ""},
+		{"engine error", &xResp{Error: &xErr{Code: "300", Message: " \ncan not get property\t "}}, "property_get error 300: can not get property"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.resp.err("property_get")
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+			} else if err == nil || err.Error() != tc.want {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestUnmarshalDeclaredLatin1Charset(t *testing.T) {
 	// The DBGp engine declares iso-8859-1; the identity charset reader must accept it.
 	var r xResp

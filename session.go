@@ -23,6 +23,7 @@ type bp struct {
 	file string // container path
 	line int
 	id   string // assigned by the engine on apply
+	err  string // why the last apply failed
 }
 
 type session struct {
@@ -223,9 +224,15 @@ func (s *session) adopt(conn net.Conn) {
 	s.rawLocked("feature_set", "-n max_children -v 100") //nolint:errcheck // best-effort feature negotiation
 	s.rawLocked("feature_set", "-n max_data -v 4096")    //nolint:errcheck // best-effort feature negotiation
 	for i := range s.pending {
-		if r, _, err := s.rawLocked("breakpoint_set", fmt.Sprintf("-t line -f %s -n %d", fileURI(s.pending[i].file), s.pending[i].line)); err == nil && r != nil {
-			s.pending[i].id = r.ID
+		p := &s.pending[i]
+		p.id, p.err = "", ""
+		r, _, err := s.rawLocked("breakpoint_set", fmt.Sprintf("-t line -f %s -n %d", fileURI(p.file), p.line))
+		if err != nil {
+			p.err = err.Error()
+			log.Printf("breakpoint %s:%d rejected: %v", p.file, p.line, err)
+			continue
 		}
+		p.id = r.ID
 	}
 
 	// No breakpoints: run the script to completion and finalize the session so
@@ -335,7 +342,7 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 	if r.Message != nil && r.Message.Filename != "" {
 		s.file, s.line = s.toHost(r.Message.Filename), r.Message.Lineno
 	}
-	return &r, xmlStr, nil
+	return &r, xmlStr, r.err(name)
 }
 
 // cmd is the locking wrapper used by public methods.
@@ -430,21 +437,21 @@ func (s *session) BreakpointList() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(r.Breakpoints) == 0 {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		var b strings.Builder
-		for _, p := range s.pending {
-			fmt.Fprintf(&b, "queued %s:%d\n", s.toHost(p.file), p.line)
-		}
-		if b.Len() == 0 {
-			return "(none)", nil
-		}
-		return b.String(), nil
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var b strings.Builder
 	for _, e := range r.Breakpoints {
 		fmt.Fprintf(&b, "id=%s %s %s:%d\n", e.ID, e.State, s.toHost(e.Filename), e.Lineno)
+	}
+	for _, p := range s.pending {
+		if p.err != "" {
+			fmt.Fprintf(&b, "rejected %s:%d: %s\n", s.toHost(p.file), p.line, p.err)
+		} else if len(r.Breakpoints) == 0 {
+			fmt.Fprintf(&b, "queued %s:%d\n", s.toHost(p.file), p.line)
+		}
+	}
+	if b.Len() == 0 {
+		return "(none)", nil
 	}
 	return b.String(), nil
 }
@@ -533,9 +540,6 @@ func (s *session) Eval(expr string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if r.Error != nil {
-		return "", fmt.Errorf("eval error %s: %s", r.Error.Code, r.Error.Message)
-	}
 	if len(r.Props) == 0 {
 		return "(no result)", nil
 	}
@@ -555,8 +559,12 @@ func (s *session) PropertyGet(name string, depth int) (string, error) {
 
 func (s *session) PropertySet(name, value string) (string, error) {
 	enc := base64.StdEncoding.EncodeToString([]byte(value))
-	if _, _, err := s.cmd("property_set", fmt.Sprintf("-n %s -- %s", name, enc)); err != nil {
+	r, _, err := s.cmd("property_set", fmt.Sprintf("-n %s -- %s", name, enc))
+	if err != nil {
 		return "", err
+	}
+	if r.Success == "0" {
+		return "", fmt.Errorf("property_set failed: success=\"0\"")
 	}
 	return fmt.Sprintf("%s = %s", name, value), nil
 }

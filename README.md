@@ -55,6 +55,10 @@ DBGp packets have a maximum payload length of 64 MiB and must end with NUL.
 If a packet has an invalid length or terminator, xdbg closes the engine
 connection and returns an error.
 
+DBGp `<error>` responses return MCP tool results with `isError: true` and text `<command> error <code>: <message>`.
+The engine connection stays open after an engine error.
+Feature negotiation, `stop`, `detach`, and breakpoint cleanup with `breakpoint_clear` remain best-effort operations.
+
 ![overview](docs/xdbg-overview.svg)
 
 (Hand-drawn SVG — edit `docs/xdbg-overview.svg` directly if you need
@@ -235,13 +239,16 @@ already active, the breakpoint is applied immediately and its engine-assigned
 id is returned. If no session is active, the breakpoint is queued and applied
 automatically on the next session (the next `xdbg_request` or
 `xdbg_run_command`). Multiple breakpoints can be set before triggering the
-request; all of them are applied when the engine connects.
+request; xdbg sends them to the engine when it connects.
+If the engine rejects a live breakpoint, the tool returns an error and does not store it.
+If the engine rejects a queued breakpoint, xdbg logs the rejection to stderr and marks it as `rejected`.
 
 ### `xdbg_breakpoint_list()`
 Lists all breakpoints known to the engine, with their ids, state
 (`enabled`/`disabled`), file (translated back to a host path) and line. When
 no session is active, lists the queued breakpoints instead. Use it to verify
 what's armed before firing a request. Safe to call any time.
+Rejected queued breakpoints appear as `rejected <file>:<line>: <error>`, including when the engine lists accepted breakpoints.
 
 ### `xdbg_breakpoint_remove(string id)`
 `id` is the breakpoint id returned by `xdbg_set_breakpoint` or shown by
@@ -348,8 +355,8 @@ Returns an error if the expression throws.
 `name` is a variable name (e.g. `$foo`); `stackDepth` defaults to 0. Returns
 the value of one variable or property in the given stack frame. Use it to
 drill into a variable you saw in `xdbg_context` — for nested structures, it
-returns the child properties. Returns `(not found)` when the name doesn't
-exist in scope.
+returns the child properties. Returns `(not found)` only when the engine returns no property and no error.
+An engine error, including code 300 for a missing property, returns an error result.
 
 ### `xdbg_property_set(string name, string value)`
 `name` is a variable name; `value` is a PHP literal (e.g. `"bar"` or `42`).
@@ -357,6 +364,7 @@ Sets the variable to the given value in the current scope. Use it to test how
 the code behaves with different inputs without editing the source. The value
 is base64-encoded and sent via the DBGp `property_set` command. Returns
 `<name> = <value>` on success.
+An engine `<error>` response or `success="0"` returns an error result instead.
 
 ### `xdbg_detach()`
 Detaches from the engine: lets the script finish on its own and drops the

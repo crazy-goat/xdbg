@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"testing"
@@ -33,6 +35,28 @@ func (e *fakeEngine) send(xml string) {
 	_ = e.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	if _, err := e.conn.Write([]byte(dbgpPacket(xml))); err != nil {
 		e.t.Errorf("engine write: %v", err)
+	}
+}
+
+func newActivePipe(t *testing.T) (*session, *fakeEngine) {
+	t.Helper()
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.conn = conn
+	s.r = bufio.NewReader(conn)
+	s.state = "started"
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	return s, eng
+}
+
+func (e *fakeEngine) respond(responses ...string) {
+	e.t.Helper()
+	r := bufio.NewReader(e.conn)
+	for _, response := range responses {
+		if _, err := r.ReadString(0); err != nil {
+			return
+		}
+		e.send(xmlProlog + response)
 	}
 }
 
@@ -187,6 +211,179 @@ func TestRawLockedWellFormedResponse(t *testing.T) {
 	r, _, err := s.cmd("run", "")
 	if err != nil || r == nil || r.Status != "break" || s.state != "break" {
 		t.Fatalf("got %+v, %v, state %q", r, err, s.state)
+	}
+}
+
+func TestRawLockedErrorResponse(t *testing.T) {
+	s, eng := newActivePipe(t)
+	response := `<response command="run" status="break"><message filename="file:///d/a.php" lineno="9"/>` +
+		`<error code="5"><message><![CDATA[ command is not available ]]></message></error></response>`
+	go eng.respond(response, `<response command="stack_get" status="break"/>`)
+
+	s.mu.Lock()
+	r, raw, err := s.rawLocked("run", "")
+	s.mu.Unlock()
+	if err == nil || err.Error() != "run error 5: command is not available" {
+		t.Fatalf("rawLocked error = %v, want the engine code and message", err)
+	}
+	if r == nil || r.Error == nil || r.Error.Code != "5" || raw != xmlProlog+response {
+		t.Fatalf("rawLocked = %+v, %q; want the parsed response and raw XML", r, raw)
+	}
+	if s.state != "break" || s.conn == nil || s.file != "/l/a.php" || s.line != 9 {
+		t.Fatalf("state = %q, conn nil = %v, location = %s", s.state, s.conn == nil, s.location())
+	}
+	if _, err := s.Stack(); err != nil {
+		t.Fatalf("the session must remain usable after an engine error: %v", err)
+	}
+}
+
+func TestSetBreakpointEngineError(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go eng.respond(`<response command="breakpoint_set"><error code="200"><message>breakpoint could not be set</message></error></response>`)
+
+	text, err := s.SetBreakpoint("a.php", 3)
+	if err == nil || err.Error() != "breakpoint_set error 200: breakpoint could not be set" || text != "" {
+		t.Fatalf("SetBreakpoint = %q, %v; want the engine error", text, err)
+	}
+	if len(s.pending) != 0 {
+		t.Fatalf("a rejected live breakpoint must not be stored, got %+v", s.pending)
+	}
+}
+
+func TestPropertySetEngineError(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go eng.respond(`<response command="property_set" success="0"><error code="300"><message>can not get property</message></error></response>`)
+
+	text, err := s.PropertySet("$x", "42")
+	if err == nil || err.Error() != "property_set error 300: can not get property" || text != "" {
+		t.Fatalf("PropertySet = %q, %v; want the engine error", text, err)
+	}
+}
+
+func TestPropertySetSuccessZero(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go eng.respond(`<response command="property_set" success="0"/>`)
+
+	text, err := s.PropertySet("$x", "42")
+	if err == nil || !strings.Contains(err.Error(), "property_set") || !strings.Contains(err.Error(), `success="0"`) || text != "" {
+		t.Fatalf("PropertySet = %q, %v; want an error for success=0", text, err)
+	}
+}
+
+func TestPropertySetSuccess(t *testing.T) {
+	for _, attrs := range []string{` success="1"`, ""} {
+		t.Run(attrs, func(t *testing.T) {
+			s, eng := newActivePipe(t)
+			go eng.respond(`<response command="property_set"` + attrs + `/>`)
+
+			text, err := s.PropertySet("$x", "42")
+			if err != nil || text != "$x = 42" {
+				t.Fatalf("PropertySet = %q, %v; want a successful assignment", text, err)
+			}
+		})
+	}
+}
+
+func TestPropertyGetEngineError(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go eng.respond(`<response command="property_get"><error code="300"><message>can not get property</message></error></response>`)
+
+	text, err := s.PropertyGet("$missing", 0)
+	if err == nil || err.Error() != "property_get error 300: can not get property" || text != "" {
+		t.Fatalf("PropertyGet = %q, %v; want the engine error, not (not found)", text, err)
+	}
+}
+
+func TestPropertyGetNoProperty(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go eng.respond(`<response command="property_get"/>`)
+
+	text, err := s.PropertyGet("$missing", 0)
+	if err != nil || text != "(not found)" {
+		t.Fatalf("PropertyGet = %q, %v; want (not found) without an engine error", text, err)
+	}
+}
+
+func TestEvalEngineError(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go eng.respond(`<response command="eval"><error code="206"><message><![CDATA[error evaluating code]]></message></error></response>`)
+
+	text, err := s.Eval("invalid expression")
+	if err == nil || err.Error() != "eval error 206: error evaluating code" || text != "" {
+		t.Fatalf("Eval = %q, %v; want the existing eval error text", text, err)
+	}
+}
+
+func TestRawEngineError(t *testing.T) {
+	s, eng := newActivePipe(t)
+	response := `<response command="property_get"><error code="300"><message>can not get property</message></error></response>`
+	go eng.respond(response)
+
+	raw, err := s.Raw("property_get -n $missing")
+	if err == nil || err.Error() != "property_get error 300: can not get property" || raw != xmlProlog+response {
+		t.Fatalf("Raw = %q, %v; want raw XML and the engine error", raw, err)
+	}
+}
+
+func TestAdoptRejectedPendingBreakpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		inner string
+	}{
+		{"empty engine list", ""},
+		{"accepted and rejected", `<breakpoint id="7" state="enabled" filename="file:///d/b.php" lineno="4"/>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng, conn := newPipe(t)
+			s := newSession("/l", "/d")
+			s.pending = []bp{{file: "/d/a.php", line: 3}}
+			responses := []string{
+				`<response command="feature_set" success="1"/>`,
+				`<response command="feature_set"><error code="3"><message>invalid arguments</message></error></response>`,
+				`<response command="feature_set" success="1"/>`,
+				`<response command="breakpoint_set"><error code="200"><message>breakpoint could not be set</message></error></response>`,
+			}
+			if tc.inner != "" {
+				s.pending = append(s.pending, bp{file: "/d/b.php", line: 4})
+				responses = append(responses, `<response command="breakpoint_set" id="7"/>`)
+			}
+			responses = append(responses, `<response command="breakpoint_list">`+tc.inner+`</response>`)
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			go func() {
+				eng.send(xmlProlog + `<init fileuri="file:///d/index.php"/>`)
+				eng.respond(responses...)
+			}()
+			var logs bytes.Buffer
+			oldWriter := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(oldWriter) })
+			ready := s.ready
+
+			s.adopt(conn)
+			log.SetOutput(oldWriter)
+
+			if s.state != "started" || s.conn == nil || s.handshakeError() != nil {
+				t.Fatalf("state = %q, conn nil = %v, handshake error = %v", s.state, s.conn == nil, s.handshakeError())
+			}
+			if s.pending[0].id != "" {
+				t.Fatalf("a rejected breakpoint must have no engine id, got %q", s.pending[0].id)
+			}
+			select {
+			case <-ready:
+			default:
+				t.Fatal("adopt must wake the waiters after a rejected breakpoint")
+			}
+			if !strings.Contains(logs.String(), "breakpoint /d/a.php:3 rejected: breakpoint_set error 200: breakpoint could not be set") {
+				t.Fatalf("the rejected breakpoint was not logged: %q", logs.String())
+			}
+			text, err := s.BreakpointList()
+			if err != nil || !strings.Contains(text, "rejected /l/a.php:3") || !strings.Contains(text, "200: breakpoint could not be set") || strings.Contains(text, "queued /l/a.php:3") {
+				t.Fatalf("BreakpointList = %q, %v; want the rejected breakpoint and its error", text, err)
+			}
+			if tc.inner != "" && !strings.Contains(text, "id=7 enabled /l/b.php:4") {
+				t.Fatalf("BreakpointList must retain accepted breakpoints, got %q", text)
+			}
+		})
 	}
 }
 

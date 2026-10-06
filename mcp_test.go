@@ -57,6 +57,27 @@ func TestToolsCallValidParams(t *testing.T) {
 	}
 }
 
+func TestToolsCallSetBreakpointEngineError(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go eng.respond(`<response command="breakpoint_set"><error code="200"><message>breakpoint could not be set</message></error></response>`)
+	m := newMCP(s)
+
+	resp := m.handle(rpcReq{ID: json.RawMessage(`1`), Method: "tools/call", Params: json.RawMessage(`{"name":"set_breakpoint","arguments":{"file":"a.php","line":3}}`)})
+	if resp == nil || resp.Error != nil {
+		t.Fatalf("set_breakpoint must return a tool result, got %+v", resp)
+	}
+	res, ok := resp.Result.(map[string]any)
+	if !ok || res["isError"] != true {
+		t.Fatalf("set_breakpoint must return isError: true, got %+v", resp)
+	}
+	if text := fmt.Sprint(res["content"]); !strings.Contains(text, "breakpoint_set error 200: breakpoint could not be set") {
+		t.Fatalf("set_breakpoint result = %v, want the engine code and message", res)
+	}
+	if len(s.pending) != 0 {
+		t.Fatalf("a rejected breakpoint must not be stored, got %+v", s.pending)
+	}
+}
+
 func TestToolsCallListenBadInit(t *testing.T) {
 	for _, length := range []string{"-1", "999999999999999", "9999999999"} {
 		t.Run(length, func(t *testing.T) {
