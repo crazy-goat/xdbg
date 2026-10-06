@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func decodeResponses(t *testing.T, raw string) []rpcResp {
@@ -51,6 +54,59 @@ func TestToolsCallValidParams(t *testing.T) {
 	resp := m.handle(rpcReq{ID: json.RawMessage(`1`), Method: "tools/call", Params: json.RawMessage(`{"name":"status","arguments":{}}`)})
 	if resp.Error != nil || resp.Result == nil {
 		t.Fatalf("valid call failed: %+v", resp)
+	}
+}
+
+func TestToolsCallListenBadInit(t *testing.T) {
+	for _, length := range []string{"-1", "999999999999999", "9999999999"} {
+		t.Run(length, func(t *testing.T) {
+			probe, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Skipf("cannot listen: %v", err)
+			}
+			addr := probe.Addr().String()
+			probe.Close()
+
+			s := newSession("/l", "/d")
+			s.dbgAddr = addr
+			t.Cleanup(s.closeLn)
+			done := make(chan struct{})
+			defer close(done)
+			go func() {
+				for i := 0; i < 100; i++ {
+					if c, err := net.Dial("tcp", addr); err == nil {
+						defer c.Close()
+						_ = c.SetWriteDeadline(time.Now().Add(2 * time.Second))
+						_, _ = c.Write([]byte(length + "\x00"))
+						<-done
+						return
+					}
+					select {
+					case <-done:
+						return
+					case <-time.After(50 * time.Millisecond):
+					}
+				}
+			}()
+
+			m := newMCP(s)
+			start := time.Now()
+			resp := m.handle(rpcReq{ID: json.RawMessage(`1`), Method: "tools/call", Params: json.RawMessage(`{"name":"listen","arguments":{"timeoutMs":10000}}`)})
+			if resp == nil || resp.Error != nil {
+				t.Fatalf("listen must return a tool result, got %+v", resp)
+			}
+			res, ok := resp.Result.(map[string]any)
+			if !ok || res["isError"] != true {
+				t.Fatalf("listen must return an error result, got %+v", resp)
+			}
+			text := fmt.Sprint(res["content"])
+			if !strings.Contains(text, "handshake failed") || !strings.Contains(text, "read init") || !strings.Contains(text, "bad length "+length) {
+				t.Fatalf("listen result = %v, want a handshake error for the bad length", res)
+			}
+			if time.Since(start) > 5*time.Second {
+				t.Fatalf("listen took %s, it must not wait for the timeout", time.Since(start))
+			}
+		})
 	}
 }
 

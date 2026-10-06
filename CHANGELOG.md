@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Invalid DBGp payload lengths no longer crash the MCP server or cause excessive allocation. xdbg rejects negative lengths and lengths above 64 MiB. A missing or invalid trailing NUL now causes an error and closes the engine connection (#22)
+
 ## [0.2.0] - 2026-10-06
 
 ### Added

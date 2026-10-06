@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const maxPacketLen = 64 << 20 // 64 MiB
+
 type bp struct {
 	file string // container path
 	line int
@@ -76,6 +78,11 @@ func (s *session) openOnce(timeout, portWait time.Duration) error {
 	log.Printf("DBGp listener open %s (local=%s docker=%s)", s.dbgAddr, s.localRoot, s.dockerRoot)
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("DBGp accept goroutine panic: %v", r)
+			}
+		}()
 		defer func() {
 			ln.Close()
 			s.mu.Lock()
@@ -275,11 +282,20 @@ func (s *session) readPacket() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("bad length %q: %w", lenStr, err)
 	}
+	if n < 0 || n > maxPacketLen {
+		return "", fmt.Errorf("bad length %d (max %d)", n, maxPacketLen)
+	}
 	buf := make([]byte, n)
 	if _, err := io.ReadFull(s.r, buf); err != nil {
 		return "", err
 	}
-	s.r.ReadByte() // trailing NUL
+	b, err := s.r.ReadByte()
+	if err != nil {
+		return "", fmt.Errorf("read trailing NUL: %w", err)
+	}
+	if b != 0 {
+		return "", fmt.Errorf("expected NUL after packet, got %q", b)
+	}
 	return string(buf), nil
 }
 
@@ -299,6 +315,8 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 	}
 	xmlStr, err := s.readPacket()
 	if err != nil {
+		s.conn.Close()
+		s.conn = nil
 		s.state = "no session"
 		return nil, "", err
 	}

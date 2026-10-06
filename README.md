@@ -51,6 +51,10 @@ plus CLI/Symfony command debugging and host↔container path translation.
    immediately after. Between calls, port 9003 is free for PhpStorm, browser
    Xdebug, or any other debugger.
 
+DBGp packets have a maximum payload length of 64 MiB and must end with NUL.
+If a packet has an invalid length or terminator, xdbg closes the engine
+connection and returns an error.
+
 ![overview](docs/xdbg-overview.svg)
 
 (Hand-drawn SVG — edit `docs/xdbg-overview.svg` directly if you need

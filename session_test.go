@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -46,6 +48,110 @@ func (e *fakeEngine) drain() {
 	}()
 }
 
+func TestReadPacketNegativeLength(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.r = bufio.NewReader(conn)
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	go func() {
+		_, _ = eng.conn.Write([]byte("-1\x00"))
+	}()
+
+	got, err := s.readPacket()
+	if err == nil || !strings.Contains(err.Error(), "bad length -1") || got != "" {
+		t.Fatalf("readPacket = %q, %v; want a negative length error", got, err)
+	}
+}
+
+func TestReadPacketTooLarge(t *testing.T) {
+	for _, length := range []string{"67108865", "9999999999", "999999999999999"} {
+		t.Run(length, func(t *testing.T) {
+			eng, conn := newPipe(t)
+			s := newSession("/l", "/d")
+			s.r = bufio.NewReader(conn)
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			go func() {
+				_, _ = eng.conn.Write([]byte(length + "\x00"))
+			}()
+
+			got, err := s.readPacket()
+			if err == nil || !strings.Contains(err.Error(), "max 67108864") || got != "" {
+				t.Fatalf("readPacket = %q, %v; want an error that names the maximum length", got, err)
+			}
+		})
+	}
+}
+
+func TestReadPacketEmptyLength(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.r = bufio.NewReader(conn)
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	go func() {
+		_, _ = eng.conn.Write([]byte("\x00"))
+	}()
+
+	got, err := s.readPacket()
+	if err == nil || !strings.Contains(err.Error(), "bad length") || got != "" {
+		t.Fatalf("readPacket = %q, %v; want an empty length error", got, err)
+	}
+}
+
+func TestReadPacketMissingTrailingNul(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		packet  string
+		wantErr string
+	}{
+		{"non-NUL byte", "3\x00abcX", "expected NUL"},
+		{"EOF", "3\x00abc", "read trailing NUL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng, conn := newPipe(t)
+			s := newSession("/l", "/d")
+			s.r = bufio.NewReader(conn)
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			go func() {
+				_, _ = eng.conn.Write([]byte(tc.packet))
+				_ = eng.conn.Close()
+			}()
+
+			got, err := s.readPacket()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) || got != "" {
+				t.Fatalf("readPacket = %q, %v; want %q", got, err, tc.wantErr)
+			}
+			if tc.name == "EOF" && !errors.Is(err, io.EOF) {
+				t.Fatalf("error = %v, want a wrapped EOF", err)
+			}
+		})
+	}
+}
+
+func TestRawLockedBadLengthClosesConn(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.conn = conn
+	s.r = bufio.NewReader(conn)
+	s.state = "started"
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	eng.drain()
+	go func() {
+		_, _ = eng.conn.Write([]byte("-1\x00"))
+	}()
+
+	r, raw, err := s.cmd("eval", "-- x")
+	if err == nil || !strings.Contains(err.Error(), "bad length -1") || r != nil || raw != "" {
+		t.Fatalf("cmd = %+v, %q, %v; want a negative length error", r, raw, err)
+	}
+	if s.state != "no session" || s.conn != nil {
+		t.Fatalf("state = %q, conn nil = %v", s.state, s.conn == nil)
+	}
+	_ = eng.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := eng.conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("engine read = %v, want EOF after the debugger closes the connection", err)
+	}
+}
+
 func TestRawLockedMalformedResponse(t *testing.T) {
 	eng, conn := newPipe(t)
 	s := newSession("/l", "/d")
@@ -81,6 +187,34 @@ func TestRawLockedWellFormedResponse(t *testing.T) {
 	r, _, err := s.cmd("run", "")
 	if err != nil || r == nil || r.Status != "break" || s.state != "break" {
 		t.Fatalf("got %+v, %v, state %q", r, err, s.state)
+	}
+}
+
+func TestAdoptNegativeLengthInit(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	ready := s.ready
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	go func() {
+		_, _ = eng.conn.Write([]byte("-1\x00"))
+	}()
+
+	s.adopt(conn)
+
+	if s.state != "no session" || s.conn != nil {
+		t.Fatalf("state = %q, conn nil = %v", s.state, s.conn == nil)
+	}
+	select {
+	case <-ready:
+	default:
+		t.Fatal("a failed handshake must wake the waiters")
+	}
+	if err := s.handshakeError(); err == nil || !strings.Contains(err.Error(), "read init") || !strings.Contains(err.Error(), "bad length -1") {
+		t.Fatalf("handshakeError = %v, want a read init error for a negative length", err)
+	}
+	_ = eng.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := eng.conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("engine read = %v, want EOF after the debugger closes the connection", err)
 	}
 }
 
