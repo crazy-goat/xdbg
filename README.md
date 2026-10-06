@@ -198,7 +198,12 @@ The default empty `--docker-root` means that host and container paths are the sa
 Relative breakpoint paths resolve under `--local-root`, which defaults to the current directory.
 For example, with local root `/home/dev/app`, `src/Foo.php` becomes `/home/dev/app/src/Foo.php`.
 Absolute breakpoint paths stay unchanged.
-Engine paths also stay unchanged after xdbg removes `file://`.
+Engine paths also stay unchanged after xdbg removes `file://` and decodes URI percent escapes.
+
+Breakpoint paths support spaces and non-ASCII characters.
+Pass the original path, for example `my dir/a b.php`; do not percent-encode it.
+xdbg encodes file URIs for DBGp and decodes engine file URIs for host locations and stacks.
+Plain paths retain literal percent sequences, so a filename such as `literal%20.php` stays unchanged.
 
 With a non-empty `--docker-root`, xdbg translates only the root itself and paths inside it.
 For example, local root `/home/dev/app` does not match `/home/dev/application/x.php`.
@@ -264,13 +269,15 @@ With an active session, xdbg removes an applied breakpoint from the engine befor
 If the engine call fails, the tool returns an error and keeps the local entry.
 Without an active session, xdbg removes a known breakpoint only from the local queue.
 The tool rejects an empty id without a state change.
-An unknown id goes to the engine if a session is active; otherwise, it returns an error.
+Engine ids must contain only ASCII digits; known local handles such as `q1` remain valid.
+An unknown numeric id goes to the engine if a session is active; otherwise, it returns an error.
 Returns `removed <id>` on success. Call `xdbg_breakpoint_list` first to find the id or handle.
 
 ### `xdbg_breakpoint_clear()`
 Removes every breakpoint: queued (not yet applied) and applied (active in
 the engine). Safe to call with or without an active session. Use it to reset
 state between debugging scenarios. Returns the number of breakpoints cleared.
+An invalid engine id returns an error before xdbg clears the local queue.
 
 ### `xdbg_request(string url, string? method, map<string,string>? headers, string? body, int? timeoutMs)`
 `url` is required; `method` defaults to `GET`; `headers` is an object of
@@ -371,6 +378,9 @@ the value of one variable or property in the given stack frame. Use it to
 drill into a variable you saw in `xdbg_context` — for nested structures, it
 returns the child properties. Returns `(not found)` only when the engine returns no property and no error.
 An engine error, including code 300 for a missing property, returns an error result.
+Property names support spaces, quotes, backslashes, and non-ASCII characters, for example `$arr['a b']` or `$arr["k"]`.
+Pass the original name; xdbg quotes and escapes it for DBGp.
+A name with a NUL byte returns `name must not contain NUL` without an engine command.
 
 ### `xdbg_property_set(string name, string value)`
 `name` is a variable name; `value` is a PHP literal (e.g. `"bar"` or `42`).
@@ -379,6 +389,8 @@ the code behaves with different inputs without editing the source. The value
 is base64-encoded and sent via the DBGp `property_set` command. Returns
 `<name> = <value>` on success.
 An engine `<error>` response or `success="0"` returns an error result instead.
+Property names have the same support and NUL restriction as `xdbg_property_get`.
+For example, `{name:"$arr['a b']", value:"99"}` changes the array entry with the key `a b`.
 
 ### `xdbg_detach()`
 Detaches from the engine: lets the script finish on its own and drops the

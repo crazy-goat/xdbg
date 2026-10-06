@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/url"
 	"os/exec"
 	"path"
 	"strconv"
@@ -228,7 +229,7 @@ func (s *session) adopt(conn net.Conn) {
 	for i := range s.pending {
 		p := &s.pending[i]
 		p.id, p.err = "", ""
-		r, _, err := s.rawLocked("breakpoint_set", fmt.Sprintf("-t line -f %s -n %d", fileURI(p.file), p.line))
+		r, _, err := s.rawLocked("breakpoint_set", breakpointSetArgs(p.file, p.line))
 		if err != nil {
 			p.err = err.Error()
 			log.Printf("breakpoint %s:%d rejected: %v", p.file, p.line, err)
@@ -388,7 +389,14 @@ func (s *session) toContainer(p string) string {
 
 // toHost maps a container fileuri/path back to a host path for display.
 func (s *session) toHost(fileuri string) string {
-	p := strings.TrimPrefix(fileuri, "file://")
+	p := fileuri
+	if strings.HasPrefix(fileuri, "file://") {
+		if u, err := url.Parse(fileuri); err == nil {
+			p = u.Path
+		} else {
+			p = strings.TrimPrefix(fileuri, "file://")
+		}
+	}
 	cleanPath := path.Clean(p)
 	if under(cleanPath, s.dockerRoot) {
 		return path.Join(s.localRoot, strings.TrimPrefix(cleanPath, s.dockerRoot))
@@ -396,7 +404,13 @@ func (s *session) toHost(fileuri string) string {
 	return p
 }
 
-func fileURI(containerPath string) string { return "file://" + containerPath }
+func fileURI(containerPath string) string {
+	return (&url.URL{Scheme: "file", Path: containerPath}).String()
+}
+
+func breakpointSetArgs(containerPath string, line int) string {
+	return fmt.Sprintf("-t line -f %s -n %d", quoteArg(fileURI(containerPath)), line)
+}
 
 // --- public command methods (used by both MCP and HTTP front-ends) ----------
 
@@ -423,7 +437,7 @@ func (s *session) SetBreakpoint(file string, line int) (string, error) {
 	s.nextQID++
 	b := bp{file: cpath, line: line, qid: "q" + strconv.Itoa(s.nextQID)}
 	if s.conn != nil && (s.state == "started" || s.state == "break") {
-		r, _, err := s.rawLocked("breakpoint_set", fmt.Sprintf("-t line -f %s -n %d", fileURI(cpath), line))
+		r, _, err := s.rawLocked("breakpoint_set", breakpointSetArgs(cpath, line))
 		if err != nil {
 			return "", err
 		}
@@ -461,6 +475,18 @@ func (s *session) BreakpointList() (string, error) {
 	return b.String(), nil
 }
 
+func validateBreakpointID(id string) error {
+	if id == "" {
+		return fmt.Errorf("breakpoint id must be numeric")
+	}
+	for _, c := range id {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("breakpoint id must be numeric: %q", id)
+		}
+	}
+	return nil
+}
+
 func (s *session) BreakpointRemove(id string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("id required")
@@ -472,6 +498,11 @@ func (s *session) BreakpointRemove(id string) (string, error) {
 		if p.qid == id || p.id == id {
 			index, engineID = i, p.id
 			break
+		}
+	}
+	if engineID != "" {
+		if err := validateBreakpointID(engineID); err != nil {
+			return "", err
 		}
 	}
 	if index == -1 && s.conn == nil {
@@ -492,6 +523,14 @@ func (s *session) BreakpointRemove(id string) (string, error) {
 // applied (active in the engine). Safe to call with or without an active session.
 func (s *session) BreakpointClearAll() (string, error) {
 	s.mu.Lock()
+	for _, p := range s.pending {
+		if p.id != "" {
+			if err := validateBreakpointID(p.id); err != nil {
+				s.mu.Unlock()
+				return "", err
+			}
+		}
+	}
 	pending := s.pending
 	s.pending = nil
 	s.mu.Unlock()
@@ -564,7 +603,10 @@ func (s *session) Eval(expr string) (string, error) {
 }
 
 func (s *session) PropertyGet(name string, depth int) (string, error) {
-	r, _, err := s.cmd("property_get", fmt.Sprintf("-d %d -n %s", depth, name))
+	if strings.ContainsRune(name, 0) {
+		return "", fmt.Errorf("name must not contain NUL")
+	}
+	r, _, err := s.cmd("property_get", fmt.Sprintf("-d %d -n %s", depth, quoteArg(name)))
 	if err != nil {
 		return "", err
 	}
@@ -575,8 +617,11 @@ func (s *session) PropertyGet(name string, depth int) (string, error) {
 }
 
 func (s *session) PropertySet(name, value string) (string, error) {
+	if strings.ContainsRune(name, 0) {
+		return "", fmt.Errorf("name must not contain NUL")
+	}
 	enc := base64.StdEncoding.EncodeToString([]byte(value))
-	r, _, err := s.cmd("property_set", fmt.Sprintf("-n %s -- %s", name, enc))
+	r, _, err := s.cmd("property_set", fmt.Sprintf("-n %s -- %s", quoteArg(name), enc))
 	if err != nil {
 		return "", err
 	}

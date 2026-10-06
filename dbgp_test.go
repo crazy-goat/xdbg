@@ -7,6 +7,25 @@ import (
 	"testing"
 )
 
+func TestQuoteArg(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"empty", "", `""`},
+		{"variable", "$x", `"$x"`},
+		{"spaces", "$arr['a b']", `"$arr['a b']"`},
+		{"double quotes", `$a["k"]`, `"$a[\"k\"]"`},
+		{"backslash", `a\b`, `"a\\b"`},
+		{"quotes and backslash", `$a["a\b"]`, `"$a[\"a\\b\"]"`},
+		{"trailing backslash", `a\`, `"a\\"`},
+		{"non-ASCII", "$arr['żółć']", `"$arr['żółć']"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := quoteArg(tc.in); got != tc.want {
+				t.Fatalf("quoteArg(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // --- DBGp packet framing (readPacket) ---------------------------------------
 
 func readerFor(data string) *session {

@@ -61,6 +61,20 @@ func (e *fakeEngine) respond(responses ...string) {
 	}
 }
 
+// respondTo checks the exact command before it sends the response.
+func (e *fakeEngine) respondTo(command, response string) {
+	e.t.Helper()
+	line, err := bufio.NewReader(e.conn).ReadString(0)
+	if err != nil {
+		e.t.Errorf("engine read: %v", err)
+		return
+	}
+	if line != command {
+		e.t.Errorf("engine command = %q; want %q", line, command)
+	}
+	e.send(xmlProlog + response)
+}
+
 // drain reads and discards the commands the debugger sends.
 func (e *fakeEngine) drain() {
 	go func() {
@@ -238,6 +252,56 @@ func TestRawLockedReturnsDBGpError(t *testing.T) {
 	}
 }
 
+func TestSetBreakpointEncodesPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+		uri  string
+	}{
+		{"spaces", "my dir/a b.php", "file:///d/my%20dir/a%20b.php"},
+		{"reserved characters", `my dir/100%#?"\.php`, "file:///d/my%20dir/100%25%23%3F%22%5C.php"},
+		{"non-ASCII", "my dir/żółć.php", "file:///d/my%20dir/%C5%BC%C3%B3%C5%82%C4%87.php"},
+	} {
+		for _, queued := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/queued=%v", tc.name, queued), func(t *testing.T) {
+				eng, conn := newPipe(t)
+				s := newSession("/l", "/d")
+				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+				tx := 1
+				if queued {
+					tx = 4
+					if _, err := s.SetBreakpoint(tc.file, 3); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					s.conn, s.r, s.state = conn, bufio.NewReader(conn), "started"
+				}
+				command := fmt.Sprintf("breakpoint_set -i %d -t line -f \"%s\" -n 3\x00", tx, tc.uri)
+				go func() {
+					if queued {
+						eng.send(xmlProlog + `<init fileuri="file:///d/index.php"/>`)
+						eng.respond(
+							`<response command="feature_set" success="1"/>`,
+							`<response command="feature_set" success="1"/>`,
+							`<response command="feature_set" success="1"/>`,
+						)
+					}
+					eng.respondTo(command, `<response command="breakpoint_set" id="7"/>`)
+				}()
+
+				if queued {
+					s.adopt(conn)
+				} else if _, err := s.SetBreakpoint(tc.file, 3); err != nil {
+					t.Fatal(err)
+				}
+				if len(s.pending) != 1 || s.pending[0].id != "7" || s.pending[0].file != "/d/"+tc.file {
+					t.Fatalf("pending = %+v; want the original path and engine id 7", s.pending)
+				}
+			})
+		}
+	}
+}
+
 func TestSetBreakpointEngineError(t *testing.T) {
 	s, eng := newActivePipe(t)
 	go eng.respond(`<response command="breakpoint_set"><error code="200"><message>breakpoint could not be set</message></error></response>`)
@@ -401,6 +465,54 @@ func TestBreakpointRemoveEmptyIDNoStateChange(t *testing.T) {
 			}
 			if !slices.Equal(s.pending, before) || s.Status() != status || s.tx != tx {
 				t.Fatalf("Status = %q, pending = %+v, tx = %d; empty id must not change state", s.Status(), s.pending, s.tx)
+			}
+		})
+	}
+}
+
+func TestBreakpointRemoveRejectsInvalidID(t *testing.T) {
+	for _, id := range []string{"abc", "q99", "1 -d 2", "1\x00stop", "-1", "+1", "1.0", " 1", "1 ", "١"} {
+		for _, active := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%q/active=%v", id, active), func(t *testing.T) {
+				s := newSession("/l", "/d")
+				if active {
+					s, _ = newActivePipe(t)
+				}
+				s.pending = []bp{{file: "/d/a.php", line: 3, id: "1001", qid: "q1"}}
+				before, status := slices.Clone(s.pending), s.Status()
+
+				text, err := s.BreakpointRemove(id)
+				if err == nil || !strings.Contains(err.Error(), "numeric") || text != "" {
+					t.Fatalf("BreakpointRemove = %q, %v; want a numeric id error", text, err)
+				}
+				if !slices.Equal(s.pending, before) || s.Status() != status || s.tx != 0 {
+					t.Fatalf("Status = %q, pending = %+v, tx = %d; an invalid id must not change state", s.Status(), s.pending, s.tx)
+				}
+			})
+		}
+	}
+}
+
+func TestBreakpointRemoveRejectsInvalidEngineID(t *testing.T) {
+	s, _ := newActivePipe(t)
+	s.pending = []bp{{file: "/d/a.php", line: 3, id: "1001 -d 2", qid: "q1"}}
+	before := slices.Clone(s.pending)
+
+	text, err := s.BreakpointRemove("q1")
+	if err == nil || !strings.Contains(err.Error(), "numeric") || text != "" || !slices.Equal(s.pending, before) || s.tx != 0 {
+		t.Fatalf("BreakpointRemove = %q, %v; pending = %+v, tx = %d; want rejection of the invalid engine id", text, err, s.pending, s.tx)
+	}
+}
+
+func TestBreakpointRemoveNumericID(t *testing.T) {
+	for _, id := range []string{"0", "001", "184467440737095516160"} {
+		t.Run(id, func(t *testing.T) {
+			s, eng := newActivePipe(t)
+			go eng.respondTo("breakpoint_remove -i 1 -d "+id+"\x00", `<response command="breakpoint_remove"/>`)
+
+			text, err := s.BreakpointRemove(id)
+			if err != nil || text != "removed "+id {
+				t.Fatalf("BreakpointRemove = %q, %v; want removal of the numeric id", text, err)
 			}
 		})
 	}
@@ -677,6 +789,59 @@ func TestBreakpointClearAllBestEffort(t *testing.T) {
 	}
 }
 
+func TestBreakpointClearAllRejectsInvalidEngineID(t *testing.T) {
+	s, _ := newActivePipe(t)
+	s.pending = []bp{
+		{file: "/d/a.php", line: 3, id: "1001", qid: "q1"},
+		{file: "/d/b.php", line: 4, id: "1002\x00stop", qid: "q2"},
+	}
+	before := slices.Clone(s.pending)
+
+	text, err := s.BreakpointClearAll()
+	if err == nil || !strings.Contains(err.Error(), "numeric") || text != "" || !slices.Equal(s.pending, before) || s.tx != 0 {
+		t.Fatalf("BreakpointClearAll = %q, %v; pending = %+v, tx = %d; want rejection before any state change", text, err, s.pending, s.tx)
+	}
+}
+
+func TestPropertySetQuotesName(t *testing.T) {
+	for _, tc := range []struct{ name, arg string }{
+		{"$x", `"$x"`},
+		{"$arr['a b']", `"$arr['a b']"`},
+		{`$arr["k"]`, `"$arr[\"k\"]"`},
+		{`$arr['a\b']`, `"$arr['a\\b']"`},
+		{`$arr["a\b"]`, `"$arr[\"a\\b\"]"`},
+		{"$arr['żółć']", `"$arr['żółć']"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, eng := newActivePipe(t)
+			go eng.respondTo("property_set -i 1 -n "+tc.arg+" -- OTk=\x00", `<response command="property_set" success="1"/>`)
+
+			text, err := s.PropertySet(tc.name, "99")
+			if err != nil || text != tc.name+" = 99" {
+				t.Fatalf("PropertySet = %q, %v; want a successful assignment", text, err)
+			}
+		})
+	}
+}
+
+func TestPropertyNamesRejectNUL(t *testing.T) {
+	for _, method := range []string{"get", "set"} {
+		t.Run(method, func(t *testing.T) {
+			s, _ := newActivePipe(t)
+			var text string
+			var err error
+			if method == "get" {
+				text, err = s.PropertyGet("$x\x00stop", 0)
+			} else {
+				text, err = s.PropertySet("$x\x00stop", "99")
+			}
+			if err == nil || err.Error() != "name must not contain NUL" || text != "" || s.tx != 0 || s.state != "started" {
+				t.Fatalf("Property%s = %q, %v; tx = %d, state = %q; want a NUL error without a command", method, text, err, s.tx, s.state)
+			}
+		})
+	}
+}
+
 func TestPropertySetEngineError(t *testing.T) {
 	s, eng := newActivePipe(t)
 	go eng.respond(`<response command="property_set" success="0"><error code="300"><message>can not get property</message></error></response>`)
@@ -706,6 +871,27 @@ func TestPropertySetSuccess(t *testing.T) {
 			text, err := s.PropertySet("$x", "42")
 			if err != nil || text != "$x = 42" {
 				t.Fatalf("PropertySet = %q, %v; want a successful assignment", text, err)
+			}
+		})
+	}
+}
+
+func TestPropertyGetQuotesName(t *testing.T) {
+	for _, tc := range []struct{ name, arg string }{
+		{"$x", `"$x"`},
+		{"$arr['a b']", `"$arr['a b']"`},
+		{`$arr["k"]`, `"$arr[\"k\"]"`},
+		{`$arr['a\b']`, `"$arr['a\\b']"`},
+		{`$arr["a\b"]`, `"$arr[\"a\\b\"]"`},
+		{"$arr['żółć']", `"$arr['żółć']"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, eng := newActivePipe(t)
+			go eng.respondTo("property_get -i 1 -d 2 -n "+tc.arg+"\x00", `<response command="property_get"><property type="int">5</property></response>`)
+
+			text, err := s.PropertyGet(tc.name, 2)
+			if err != nil || text != "5" {
+				t.Fatalf("PropertyGet = %q, %v; want the property value", text, err)
 			}
 		})
 	}
@@ -1040,6 +1226,63 @@ func TestToHost(t *testing.T) {
 	}
 }
 
+func TestToHostDecodesURI(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"spaces", "file:///d/my%20dir/x.php", "/l/my dir/x.php"},
+		{"reserved characters", "file:///d/100%25%23%3F%22%5C.php", "/l/100%#?\"\\.php"},
+		{"non-ASCII", "file:///d/%C5%BC%C3%B3%C5%82%C4%87.php", "/l/żółć.php"},
+		{"encoded percent", "file:///d/literal%2520.php", "/l/literal%20.php"},
+		{"plain percent", "/d/100%.php", "/l/100%.php"},
+		{"plain percent escape", "/d/literal%20.php", "/l/literal%20.php"},
+		{"plain URI characters", "/d/a#b?c.php", "/l/a#b?c.php"},
+		{"malformed escape", "file:///d/100%.php", "/l/100%.php"},
+		{"malformed URI stays encoded", "file:///d/my%20dir/100%.php", "/l/my%20dir/100%.php"},
+		{"outside root", "file:///other/my%20dir/x.php", "/other/my dir/x.php"},
+		{"non-file URI", "https://example.com/a%20b.php", "https://example.com/a%20b.php"},
+		{"no file authority delimiter", "file:/d/my%20dir/x.php", "file:/d/my%20dir/x.php"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSession("/l", "/d")
+			if got := s.toHost(tc.in); got != tc.want {
+				t.Fatalf("toHost(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBreakpointListPreservesPlainPercentEscapes(t *testing.T) {
+	s := newSession("/l", "/d")
+	if _, err := s.SetBreakpoint("literal%20.php", 3); err != nil {
+		t.Fatal(err)
+	}
+
+	text, err := s.BreakpointList()
+	want := "queued q1 /l/literal%20.php:3\n"
+	if err != nil || text != want {
+		t.Fatalf("BreakpointList = %q, %v; want %q", text, err, want)
+	}
+}
+
+func TestLocationAndStackDecodeFileURI(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go eng.respond(
+		`<response command="run" status="break" reason="ok"><message filename="file:///d/my%20dir/a%20b.php" lineno="3"/></response>`,
+		`<response command="stack_get"><stack level="0" where="main" filename="file:///d/my%20dir/a%20b.php" lineno="3"/></response>`,
+	)
+
+	text, err := s.step("run")
+	if err != nil || text != "state=break reason=ok\nlocation=/l/my dir/a b.php:3" {
+		t.Fatalf("run = %q, %v; want the decoded host path", text, err)
+	}
+	if status := s.Status(); !strings.Contains(status, "location=/l/my dir/a b.php:3") {
+		t.Fatalf("Status = %q; want the decoded host path", status)
+	}
+	text, err = s.Stack()
+	if err != nil || text != "#0 main  /l/my dir/a b.php:3\n" {
+		t.Fatalf("Stack = %q, %v; want the decoded host path", text, err)
+	}
+}
+
 func TestAdoptBreakpointWithEmptyDockerRoot(t *testing.T) {
 	eng, conn := newPipe(t)
 	s := newSession("/home/dev/app", "")
@@ -1068,8 +1311,8 @@ func TestAdoptBreakpointWithEmptyDockerRoot(t *testing.T) {
 
 	select {
 	case line := <-command:
-		if !strings.Contains(line, "-f file:///home/dev/app/src/Foo.php -n 10") {
-			t.Fatalf("breakpoint command = %q, want an absolute file URI", line)
+		if line != "breakpoint_set -i 4 -t line -f \"file:///home/dev/app/src/Foo.php\" -n 10\x00" {
+			t.Fatalf("breakpoint command = %q, want a quoted absolute file URI", line)
 		}
 	default:
 		t.Fatal("the engine did not receive breakpoint_set")

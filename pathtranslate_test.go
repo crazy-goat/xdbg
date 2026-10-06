@@ -27,7 +27,19 @@ func TestPathTranslationRoundTrip(t *testing.T) {
 }
 
 func TestFileURI(t *testing.T) {
-	if got := fileURI("/var/www/proj/a.php"); got != "file:///var/www/proj/a.php" {
-		t.Fatalf("fileURI = %q", got)
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain path", "/app/a.php", "file:///app/a.php"},
+		{"spaces", "/app/my dir/a b.php", "file:///app/my%20dir/a%20b.php"},
+		{"percent", "/app/100%.php", "file:///app/100%25.php"},
+		{"literal percent escape", "/app/literal%20.php", "file:///app/literal%2520.php"},
+		{"fragment and query", "/app/a#b?c.php", "file:///app/a%23b%3Fc.php"},
+		{"quote and backslash", `/app/a"b\c.php`, "file:///app/a%22b%5Cc.php"},
+		{"non-ASCII", "/app/żółć.php", "file:///app/%C5%BC%C3%B3%C5%82%C4%87.php"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fileURI(tc.in); got != tc.want {
+				t.Fatalf("fileURI(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

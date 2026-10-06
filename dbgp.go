@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+// quoteArg quotes a DBGp argument. Callers must reject NUL bytes.
+func quoteArg(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
+}
+
 // DBGp response structs (we only model the fields we use).
 
 type xResp struct {
