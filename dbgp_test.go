@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestQuoteArg(t *testing.T) {
@@ -229,5 +230,19 @@ func TestSummarizeTruncatesLongValue(t *testing.T) {
 	got := summarize(xProp{Type: "string", Value: long})
 	if len([]rune(got)) != 301 || !strings.HasSuffix(got, "…") {
 		t.Fatalf("summarize length = %d, want 301 ending in an ellipsis", len([]rune(got)))
+	}
+}
+
+func TestSummarizeTruncatesLongUTF8Value(t *testing.T) {
+	long := "a" + strings.Repeat("é", 350)
+	got := summarize(xProp{Type: "string", Value: long})
+	if !utf8.ValidString(got) {
+		t.Fatalf("summarize = %q, want valid UTF-8", got)
+	}
+	if n := utf8.RuneCountInString(got); n != 301 {
+		t.Fatalf("summarize length = %d, want 301 runes", n)
+	}
+	if want := "a" + strings.Repeat("é", 299) + "…"; got != want {
+		t.Fatalf("summarize = %q, want %q", got, want)
 	}
 }

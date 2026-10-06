@@ -96,8 +96,8 @@ func summarize(p xProp) string {
 		return p.Type + " {" + strconv.Itoa(len(p.Children)) + " children}"
 	}
 	v := decodeVal(p)
-	if len(v) > 300 {
-		v = v[:300] + "…"
+	if r := []rune(v); len(r) > 300 {
+		v = string(r[:300]) + "…"
 	}
 	return v
 }
