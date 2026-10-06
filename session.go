@@ -248,25 +248,28 @@ func (s *session) adopt(conn net.Conn) {
 		if r != nil && r.Status == "stopping" {
 			s.rawLocked("stop", "") //nolint:errcheck // best-effort stop
 		}
-		if s.conn != nil {
-			s.conn.Close()
-			s.conn = nil
-		}
-		s.state = "no session"
+		s.dropLocked()
 	}
 
 	s.signalReadyLocked()
+}
+
+// dropLocked closes the engine connection and resets the session state.
+// s.mu must be held.
+func (s *session) dropLocked() {
+	if s.conn != nil {
+		_ = s.conn.Close()
+		s.conn = nil
+	}
+	s.state = "no session"
+	s.clearLocationLocked()
 }
 
 // failHandshakeLocked drops the connection after a failed DBGp handshake and
 // wakes the waiters with an error. s.mu must be held.
 func (s *session) failHandshakeLocked(step string, err error) {
 	log.Printf("%s: %v", step, err)
-	if s.conn != nil {
-		s.conn.Close()
-		s.conn = nil
-	}
-	s.state = "no session"
+	s.dropLocked()
 	s.adoptErr = fmt.Errorf("DBGp handshake failed after Xdebug connected (%s): %w", step, err)
 	s.signalReadyLocked()
 }
@@ -325,14 +328,12 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 		line += " " + args
 	}
 	if _, err := s.conn.Write([]byte(line + "\x00")); err != nil {
-		s.state = "no session"
+		s.dropLocked()
 		return nil, "", err
 	}
 	xmlStr, err := s.readPacket()
 	if err != nil {
-		s.conn.Close()
-		s.conn = nil
-		s.state = "no session"
+		s.dropLocked()
 		return nil, "", err
 	}
 	var r xResp
@@ -341,6 +342,9 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 	}
 	if r.Status != "" {
 		s.state = r.Status
+		if r.Status != "break" {
+			s.clearLocationLocked()
+		}
 	}
 	if r.Message != nil && r.Message.Filename != "" {
 		s.file, s.line = s.toHost(r.Message.Filename), r.Message.Lineno
@@ -413,6 +417,10 @@ func breakpointSetArgs(containerPath string, line int) string {
 }
 
 // --- public command methods (used by both MCP and HTTP front-ends) ----------
+
+func (s *session) clearLocationLocked() {
+	s.file, s.line = "", 0
+}
 
 func (s *session) location() string {
 	if s.file == "" {
@@ -635,11 +643,7 @@ func (s *session) Detach() (string, error) {
 	s.cmd("detach", "") //nolint:errcheck // best-effort detach
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.conn != nil {
-		s.conn.Close()
-		s.conn = nil
-	}
-	s.state = "no session"
+	s.dropLocked()
 	return "detached", nil
 }
 
@@ -647,11 +651,7 @@ func (s *session) Stop() (string, error) {
 	s.cmd("stop", "") //nolint:errcheck // best-effort stop
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.conn != nil {
-		s.conn.Close()
-		s.conn = nil
-	}
-	s.state = "no session"
+	s.dropLocked()
 	return "stopped", nil
 }
 

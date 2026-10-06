@@ -1318,3 +1318,119 @@ func TestAdoptBreakpointWithEmptyDockerRoot(t *testing.T) {
 		t.Fatal("the engine did not receive breakpoint_set")
 	}
 }
+
+func TestStepStoppingClearsLocation(t *testing.T) {
+	s, eng := newActivePipe(t)
+	s.file, s.line = "/l/t.php", 5
+	go eng.respondTo("run -i 1\x00", "<response command=\"run\" status=\"stopping\" reason=\"ok\"/>")
+
+	out, err := s.step("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "location=-") || !strings.Contains(out, "(script finished)") {
+		t.Fatalf("step output = %q, want a cleared location and script-finished marker", out)
+	}
+}
+
+func TestStepStartingClearsLocation(t *testing.T) {
+	s, eng := newActivePipe(t)
+	s.file, s.line = "/l/t.php", 5
+	go eng.respondTo("run -i 1\x00", "<response command=\"run\" status=\"starting\" reason=\"ok\"/>")
+
+	out, err := s.step("run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "location=-") {
+		t.Fatalf("step output = %q, want a cleared location", out)
+	}
+}
+
+func TestStepBreakUpdatesLocation(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go eng.respondTo("step_over -i 1\x00", "<response command=\"step_over\" status=\"break\" reason=\"ok\"><message filename=\"file:///d/t.php\" lineno=\"7\"/></response>")
+
+	out, err := s.step("step_over")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "location=/l/t.php:7") {
+		t.Fatalf("step output = %q, want the new break location", out)
+	}
+}
+
+func TestStopClearsLocation(t *testing.T) {
+	s, eng := newActivePipe(t)
+	s.file, s.line = "/l/t.php", 5
+	go eng.respondTo("stop -i 1\x00", "<response command=\"stop\" status=\"stopped\"/>")
+
+	got, err := s.Stop()
+	if err != nil || got != "stopped" {
+		t.Fatalf("Stop() = %q, %v", got, err)
+	}
+	if !strings.Contains(s.Status(), "state=no session\nlocation=-") {
+		t.Fatalf("Status() = %q, want no session and no location", s.Status())
+	}
+}
+
+func TestDetachClearsLocation(t *testing.T) {
+	s, eng := newActivePipe(t)
+	s.file, s.line = "/l/t.php", 5
+	go eng.respondTo("detach -i 1\x00", "<response command=\"detach\" status=\"stopping\"/>")
+
+	got, err := s.Detach()
+	if err != nil || got != "detached" {
+		t.Fatalf("Detach() = %q, %v", got, err)
+	}
+	if !strings.Contains(s.Status(), "state=no session\nlocation=-") {
+		t.Fatalf("Status() = %q, want no session and no location", s.Status())
+	}
+}
+
+func TestRawLockedWriteErrorClearsLocation(t *testing.T) {
+	s, eng := newActivePipe(t)
+	s.file, s.line = "/l/t.php", 5
+	_ = eng.conn.Close()
+
+	_, _, err := s.cmd("run", "")
+	if err == nil {
+		t.Fatal("command write error = nil, want a closed-connection error")
+	}
+	if s.state != "no session" || s.conn != nil || s.location() != "-" {
+		t.Fatalf("state = %q, conn nil = %v, location = %q", s.state, s.conn == nil, s.location())
+	}
+}
+
+func TestRawLockedReadErrorClearsLocation(t *testing.T) {
+	s, eng := newActivePipe(t)
+	s.file, s.line = "/l/t.php", 5
+	go func() {
+		_, _ = bufio.NewReader(eng.conn).ReadString(0)
+		_ = eng.conn.Close()
+	}()
+
+	_, _, err := s.cmd("run", "")
+	if err == nil {
+		t.Fatal("command read error = nil, want an EOF")
+	}
+	if s.state != "no session" || s.conn != nil || s.location() != "-" {
+		t.Fatalf("state = %q, conn nil = %v, location = %q", s.state, s.conn == nil, s.location())
+	}
+}
+
+func TestFailHandshakeClearsLocation(t *testing.T) {
+	s, _ := newActivePipe(t)
+	s.file, s.line = "/l/t.php", 5
+
+	s.mu.Lock()
+	s.failHandshakeLocked("read init", errors.New("closed"))
+	s.mu.Unlock()
+
+	if s.conn != nil || s.state != "no session" || s.location() != "-" {
+		t.Fatalf("state = %q, conn nil = %v, location = %q", s.state, s.conn == nil, s.location())
+	}
+	if s.adoptErr == nil {
+		t.Fatal("handshake error = nil, want the original failure")
+	}
+}
