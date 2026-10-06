@@ -51,6 +51,14 @@ plus CLI/Symfony command debugging and host↔container path translation.
    immediately after. Between calls, port 9003 is free for PhpStorm, browser
    Xdebug, or any other debugger.
 
+DBGp packets have a maximum payload length of 64 MiB and must end with NUL.
+If a packet has an invalid length or terminator, xdbg closes the engine
+connection and returns an error.
+
+DBGp `<error>` responses return MCP tool results with `isError: true` and text `<command> error <code>: <message>`.
+The engine connection stays open after an engine error.
+Feature negotiation, `stop`, `detach`, and breakpoint cleanup with `breakpoint_clear` remain best-effort operations.
+
 ![overview](docs/xdbg-overview.svg)
 
 (Hand-drawn SVG — edit `docs/xdbg-overview.svg` directly if you need
@@ -178,12 +186,37 @@ Reconnect MCP in Claude Code. Tools appear as `mcp__xdbg__*`.
 |---|---|---|
 | `--dbg-port` | `9003` | Port Xdebug dials into (the listener binds `0.0.0.0:<port>`) |
 | `--local-root` | — | Host project root (for path translation) |
-| `--docker-root` | — | Container project root (for path translation) |
+| `--docker-root` | `""` (empty) | Container project root; empty disables path translation (host and container paths are the same) |
 | `--xdebug-enable-cmd` | — | Shell command to enable Xdebug in the container |
 | `--xdebug-disable-cmd` | — | Shell command to disable Xdebug in the container |
 | `--xdebug-status-cmd` | — | Shell command to check Xdebug status in the container |
 | `--container-exec` | `docker compose exec -T php` | Prefix for running CLI commands inside the container |
 
+### Path translation
+
+The default empty `--docker-root` means that host and container paths are the same.
+Relative breakpoint paths resolve under `--local-root`, which defaults to the current directory.
+For example, with local root `/home/dev/app`, `src/Foo.php` becomes `/home/dev/app/src/Foo.php`.
+Absolute breakpoint paths stay unchanged.
+Engine paths also stay unchanged after xdbg removes `file://` and decodes URI percent escapes.
+
+Breakpoint paths support spaces and non-ASCII characters.
+Pass the original path, for example `my dir/a b.php`; do not percent-encode it.
+xdbg encodes file URIs for DBGp and decodes engine file URIs for host locations and stacks.
+Plain paths retain literal percent sequences, so a filename such as `literal%20.php` stays unchanged.
+
+With a non-empty `--docker-root`, xdbg translates only the root itself and paths inside it.
+For example, local root `/home/dev/app` does not match `/home/dev/application/x.php`.
+xdbg uses POSIX path rules to clean roots and input paths before root comparisons and suffix extraction.
+The root `/` remains valid.
+Paths that do not need translation retain their original spelling.
+
+When roots are nested, the more specific root takes precedence for absolute breakpoint paths.
+A match on the local root translates to the Docker root; a match on the Docker root stays unchanged.
+For example, local `/var/www/app` and Docker `/var/www` translate `/var/www/app/src/A.php` to `/var/www/src/A.php`.
+For the reverse nesting, paths already under the Docker root stay unchanged.
+Use a project-relative breakpoint path if an absolute path can refer to either root.
+Engine paths always translate from the Docker root to the local root.
 
 ### Let the agent toggle Xdebug for you
 
@@ -211,24 +244,40 @@ already active, the breakpoint is applied immediately and its engine-assigned
 id is returned. If no session is active, the breakpoint is queued and applied
 automatically on the next session (the next `xdbg_request` or
 `xdbg_run_command`). Multiple breakpoints can be set before triggering the
-request; all of them are applied when the engine connects.
+request; xdbg sends them to the engine when it connects.
+The queued reply includes a stable local handle, such as `q1`, `q2`, or `q3`.
+Use this handle to remove the breakpoint without an active session.
+The handle stays the same across sessions and xdbg does not reuse it in the same process.
+If the engine rejects a live breakpoint, the tool returns an error and does not store it.
+If the engine rejects a queued breakpoint, xdbg logs the rejection to stderr and marks it as `rejected`.
 
 ### `xdbg_breakpoint_list()`
 Lists all breakpoints known to the engine, with their ids, state
-(`enabled`/`disabled`), file (translated back to a host path) and line. When
-no session is active, lists the queued breakpoints instead. Use it to verify
-what's armed before firing a request. Safe to call any time.
+(`enabled`/`disabled`), host path, and line.
+With an active session, it also lists queued breakpoints that have no engine id.
+When no session is active, it lists the local queue instead.
+Queued entries appear as `queued <handle> <file>:<line>`, for example `queued q1 /home/dev/app/src/Foo.php:10`.
+An empty list returns `(none)`.
+Use it to check breakpoints before a request. Safe to call any time.
+Rejected queued breakpoints appear as `rejected <handle> <file>:<line>: <error>` with or without an active session.
 
 ### `xdbg_breakpoint_remove(string id)`
-`id` is the breakpoint id returned by `xdbg_set_breakpoint` or shown by
-`xdbg_breakpoint_list`. Removes a single breakpoint — both from the engine
-(if a session is active) and from the local queue. Returns `removed <id>` on
-success. Call `xdbg_breakpoint_list` first to find the id.
+`id` is an engine id or a local handle from `xdbg_set_breakpoint` or `xdbg_breakpoint_list`.
+To remove a queued or rejected breakpoint without a session, pass its handle, for example `{id:"q1"}`.
+The handle also works after xdbg applies the breakpoint to an engine.
+With an active session, xdbg removes an applied breakpoint from the engine before it removes the local entry.
+If the engine call fails, the tool returns an error and keeps the local entry.
+Without an active session, xdbg removes a known breakpoint only from the local queue.
+The tool rejects an empty id without a state change.
+Engine ids must contain only ASCII digits; known local handles such as `q1` remain valid.
+An unknown numeric id goes to the engine if a session is active; otherwise, it returns an error.
+Returns `removed <id>` on success. Call `xdbg_breakpoint_list` first to find the id or handle.
 
 ### `xdbg_breakpoint_clear()`
 Removes every breakpoint: queued (not yet applied) and applied (active in
 the engine). Safe to call with or without an active session. Use it to reset
 state between debugging scenarios. Returns the number of breakpoints cleared.
+An invalid engine id returns an error before xdbg clears the local queue.
 
 ### `xdbg_request(string url, string? method, map<string,string>? headers, string? body, int? timeoutMs)`
 `url` is required; `method` defaults to `GET`; `headers` is an object of
@@ -240,15 +289,18 @@ breakpoints, and pauses at the first break. When no breakpoints are set, the
 script runs to completion and the request returns. To debug interactively,
 set breakpoints first, then call `xdbg_request` — the tool returns once the
 session is paused, and you drive it with `xdbg_run` / `xdbg_step_*` / etc.
+A `Host` header sets the request Host, regardless of case, without a change to the destination URL.
+HTTP client errors return immediately as `request failed: <error>` instead of an Xdebug connection timeout.
 
 ### `xdbg_request_from_files(string url, string? method, string? headers_file, string? body_file, int? timeoutMs)`
-`url` is required; `headers_file` is a path to a file with `Name: Value`
-lines (blank lines and `#` comments ignored — or a JSON object); `body_file`
-is a path to raw body bytes; `timeoutMs` defaults to 15000. Like
-`xdbg_request` but reads headers and body from disk. Use it when headers
-contain sensitive values (JWT tokens, cookies, API keys) that should not
-appear inline in the chat or tool arguments. The files are read once, at
-call time.
+`url` is required. `headers_file` is a path to a JSON object with string values
+(one line or multiple lines), or a file with `Name: Value` lines.
+The line format ignores blank lines and lines that start with `#`.
+Header names in the line format must use RFC 7230 token characters; empty or invalid names return an error with the line number.
+`body_file` is a path to raw body bytes; `timeoutMs` defaults to 15000.
+Like `xdbg_request`, this tool supports a `Host` override and returns HTTP client errors immediately.
+It reads headers and body from disk once, at call time.
+Use files to keep sensitive header values (JWT tokens, cookies, API keys) out of the chat and tool arguments.
 
 ### `xdbg_listen(int? timeoutMs)`
 `timeoutMs` defaults to 30000. Arms the DBGp listener and blocks until the
@@ -324,8 +376,11 @@ Returns an error if the expression throws.
 `name` is a variable name (e.g. `$foo`); `stackDepth` defaults to 0. Returns
 the value of one variable or property in the given stack frame. Use it to
 drill into a variable you saw in `xdbg_context` — for nested structures, it
-returns the child properties. Returns `(not found)` when the name doesn't
-exist in scope.
+returns the child properties. Returns `(not found)` only when the engine returns no property and no error.
+An engine error, including code 300 for a missing property, returns an error result.
+Property names support spaces, quotes, backslashes, and non-ASCII characters, for example `$arr['a b']` or `$arr["k"]`.
+Pass the original name; xdbg quotes and escapes it for DBGp.
+A name with a NUL byte returns `name must not contain NUL` without an engine command.
 
 ### `xdbg_property_set(string name, string value)`
 `name` is a variable name; `value` is a PHP literal (e.g. `"bar"` or `42`).
@@ -333,6 +388,9 @@ Sets the variable to the given value in the current scope. Use it to test how
 the code behaves with different inputs without editing the source. The value
 is base64-encoded and sent via the DBGp `property_set` command. Returns
 `<name> = <value>` on success.
+An engine `<error>` response or `success="0"` returns an error result instead.
+Property names have the same support and NUL restriction as `xdbg_property_get`.
+For example, `{name:"$arr['a b']", value:"99"}` changes the array entry with the key `a b`.
 
 ### `xdbg_detach()`
 Detaches from the engine: lets the script finish on its own and drops the

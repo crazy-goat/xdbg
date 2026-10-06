@@ -175,6 +175,21 @@ Set `timeoutMs` generously for `listen` (e.g. 60000 or 120000). The user may nee
 
 ---
 
+## Paths and Property Names
+
+Breakpoint paths and property names support spaces and non-ASCII characters.
+Pass the original path to `set_breakpoint`, for example `{file: "my dir/a b.php", line: 3}`.
+Do not percent-encode the path or add DBGp quotes.
+xdbg encodes file URIs and shows decoded host paths in locations and stacks.
+Plain paths retain literal percent sequences, such as `%20` in a filename.
+
+Use `property_get` with `{name: "$arr['a b']"}` to read an array entry with a space in its key.
+Use `property_set` with `{name: "$arr['a b']", value: "99"}` to change that entry.
+xdbg escapes quotes and backslashes in property names for DBGp.
+Property names must not contain NUL bytes.
+
+---
+
 ## Common Failure Modes & Recovery
 
 | Symptom | Likely cause | Fix |

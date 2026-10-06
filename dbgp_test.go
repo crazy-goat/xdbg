@@ -8,6 +8,25 @@ import (
 	"unicode/utf8"
 )
 
+func TestQuoteArg(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"empty", "", `""`},
+		{"variable", "$x", `"$x"`},
+		{"spaces", "$arr['a b']", `"$arr['a b']"`},
+		{"double quotes", `$a["k"]`, `"$a[\"k\"]"`},
+		{"backslash", `a\b`, `"a\\b"`},
+		{"quotes and backslash", `$a["a\b"]`, `"$a[\"a\\b\"]"`},
+		{"trailing backslash", `a\`, `"a\\"`},
+		{"non-ASCII", "$arr['żółć']", `"$arr['żółć']"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := quoteArg(tc.in); got != tc.want {
+				t.Fatalf("quoteArg(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // --- DBGp packet framing (readPacket) ---------------------------------------
 
 func readerFor(data string) *session {
@@ -112,6 +131,29 @@ func TestUnmarshalResponseFields(t *testing.T) {
 	}
 	if r.Error == nil || r.Error.Code != "12" || r.Error.Message != "boom" {
 		t.Fatalf("error = %+v", r.Error)
+	}
+}
+
+func TestXRespError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		resp *xResp
+		want string
+	}{
+		{"nil response", nil, ""},
+		{"no engine error", &xResp{}, ""},
+		{"engine error", &xResp{Error: &xErr{Code: "300", Message: " \ncan not get property\t "}}, "property_get error 300: can not get property"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.resp.err("property_get")
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+			} else if err == nil || err.Error() != tc.want {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

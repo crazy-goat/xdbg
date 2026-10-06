@@ -2,45 +2,17 @@ package main
 
 import "testing"
 
-// newSession trims trailing slashes, so a configured root is always prefix-safe.
-func TestNewSessionTrimsTrailingSlashes(t *testing.T) {
-	s := newSession("/host/proj/", "/var/www/proj/")
-	if s.localRoot != "/host/proj" || s.dockerRoot != "/var/www/proj" {
-		t.Fatalf("roots = %q / %q, want them without a trailing slash", s.localRoot, s.dockerRoot)
-	}
-}
-
-func TestToContainer(t *testing.T) {
-	s := newSession("/host/proj", "/var/www/proj")
-	for name, tc := range map[string]struct{ in, want string }{
-		"host absolute":          {"/host/proj/src/Foo.php", "/var/www/proj/src/Foo.php"},
-		"project relative":       {"src/Foo.php", "/var/www/proj/src/Foo.php"},
-		"other absolute path":    {"/src/Foo.php", "/src/Foo.php"}, // absolute, not under localRoot: pass through
-		"exact local root":       {"/host/proj", "/var/www/proj"},
-		"already container path": {"/var/www/proj/src/Foo.php", "/var/www/proj/src/Foo.php"},
-		"other absolute file":    {"/etc/php.ini", "/etc/php.ini"},
-		"nested relative":        {"src/Foo/Bar.php", "/var/www/proj/src/Foo/Bar.php"},
+func TestNewSessionCleansRoots(t *testing.T) {
+	for name, tc := range map[string]struct{ local, docker, wantLocal, wantDocker string }{
+		"trailing slashes":  {"/host/proj/", "/var/www/proj/", "/host/proj", "/var/www/proj"},
+		"dot segments":      {"/host//work/../proj/.", "/var//www/app/../proj/.", "/host/proj", "/var/www/proj"},
+		"filesystem roots":  {"/", "/", "/", "/"},
+		"empty docker root": {"/host//proj/.", "", "/host/proj", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := s.toContainer(tc.in); got != tc.want {
-				t.Fatalf("toContainer(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestToHost(t *testing.T) {
-	s := newSession("/host/proj", "/var/www/proj")
-	for name, tc := range map[string]struct{ in, want string }{
-		"fileuri":              {"file:///var/www/proj/src/Foo.php", "/host/proj/src/Foo.php"},
-		"plain container path": {"/var/www/proj/src/Foo.php", "/host/proj/src/Foo.php"},
-		"exact docker root":    {"file:///var/www/proj", "/host/proj"},
-		"outside docker root":  {"file:///other/abs.php", "/other/abs.php"},
-		"empty":                {"", ""},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := s.toHost(tc.in); got != tc.want {
-				t.Fatalf("toHost(%q) = %q, want %q", tc.in, got, tc.want)
+			s := newSession(tc.local, tc.docker)
+			if s.localRoot != tc.wantLocal || s.dockerRoot != tc.wantDocker {
+				t.Fatalf("roots = %q / %q, want %q / %q", s.localRoot, s.dockerRoot, tc.wantLocal, tc.wantDocker)
 			}
 		})
 	}
@@ -55,7 +27,19 @@ func TestPathTranslationRoundTrip(t *testing.T) {
 }
 
 func TestFileURI(t *testing.T) {
-	if got := fileURI("/var/www/proj/a.php"); got != "file:///var/www/proj/a.php" {
-		t.Fatalf("fileURI = %q", got)
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain path", "/app/a.php", "file:///app/a.php"},
+		{"spaces", "/app/my dir/a b.php", "file:///app/my%20dir/a%20b.php"},
+		{"percent", "/app/100%.php", "file:///app/100%25.php"},
+		{"literal percent escape", "/app/literal%20.php", "file:///app/literal%2520.php"},
+		{"fragment and query", "/app/a#b?c.php", "file:///app/a%23b%3Fc.php"},
+		{"quote and backslash", `/app/a"b\c.php`, "file:///app/a%22b%5Cc.php"},
+		{"non-ASCII", "/app/żółć.php", "file:///app/%C5%BC%C3%B3%C5%82%C4%87.php"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fileURI(tc.in); got != tc.want {
+				t.Fatalf("fileURI(%q) = %q; want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

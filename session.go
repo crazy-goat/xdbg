@@ -8,7 +8,9 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/url"
 	"os/exec"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,10 +18,14 @@ import (
 	"time"
 )
 
+const maxPacketLen = 64 << 20 // 64 MiB
+
 type bp struct {
 	file string // container path
 	line int
 	id   string // assigned by the engine on apply
+	qid  string // stable local handle
+	err  string // why the last apply failed
 }
 
 type session struct {
@@ -31,6 +37,7 @@ type session struct {
 	file     string // current location, host path
 	line     int
 	pending  []bp
+	nextQID  int           // never reset when breakpoints are removed or cleared
 	ready    chan struct{} // closed on each adopt; lets ListenWait/DoRequest await a connection
 	adoptErr error         // why the last adopt failed (nil on success); read by the waiters after ready closes
 
@@ -49,11 +56,15 @@ type session struct {
 }
 
 func newSession(localRoot, dockerRoot string) *session {
+	localRoot = path.Clean(localRoot)
+	if dockerRoot != "" {
+		dockerRoot = path.Clean(dockerRoot)
+	}
 	return &session{
 		state:      "no session",
 		ready:      make(chan struct{}),
-		localRoot:  strings.TrimRight(localRoot, "/"),
-		dockerRoot: strings.TrimRight(dockerRoot, "/"),
+		localRoot:  localRoot,
+		dockerRoot: dockerRoot,
 	}
 }
 
@@ -76,6 +87,11 @@ func (s *session) openOnce(timeout, portWait time.Duration) error {
 	log.Printf("DBGp listener open %s (local=%s docker=%s)", s.dbgAddr, s.localRoot, s.dockerRoot)
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("DBGp accept goroutine panic: %v", r)
+			}
+		}()
 		defer func() {
 			ln.Close()
 			s.mu.Lock()
@@ -211,9 +227,15 @@ func (s *session) adopt(conn net.Conn) {
 	s.rawLocked("feature_set", "-n max_children -v 100") //nolint:errcheck // best-effort feature negotiation
 	s.rawLocked("feature_set", "-n max_data -v 4096")    //nolint:errcheck // best-effort feature negotiation
 	for i := range s.pending {
-		if r, _, err := s.rawLocked("breakpoint_set", fmt.Sprintf("-t line -f %s -n %d", fileURI(s.pending[i].file), s.pending[i].line)); err == nil && r != nil {
-			s.pending[i].id = r.ID
+		p := &s.pending[i]
+		p.id, p.err = "", ""
+		r, _, err := s.rawLocked("breakpoint_set", breakpointSetArgs(p.file, p.line))
+		if err != nil {
+			p.err = err.Error()
+			log.Printf("breakpoint %s:%d rejected: %v", p.file, p.line, err)
+			continue
 		}
+		p.id = r.ID
 	}
 
 	// No breakpoints: run the script to completion and finalize the session so
@@ -275,11 +297,20 @@ func (s *session) readPacket() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("bad length %q: %w", lenStr, err)
 	}
+	if n < 0 || n > maxPacketLen {
+		return "", fmt.Errorf("bad length %d (max %d)", n, maxPacketLen)
+	}
 	buf := make([]byte, n)
 	if _, err := io.ReadFull(s.r, buf); err != nil {
 		return "", err
 	}
-	s.r.ReadByte() // trailing NUL
+	b, err := s.r.ReadByte()
+	if err != nil {
+		return "", fmt.Errorf("read trailing NUL: %w", err)
+	}
+	if b != 0 {
+		return "", fmt.Errorf("expected NUL after packet, got %q", b)
+	}
 	return string(buf), nil
 }
 
@@ -299,6 +330,8 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 	}
 	xmlStr, err := s.readPacket()
 	if err != nil {
+		s.conn.Close()
+		s.conn = nil
 		s.state = "no session"
 		return nil, "", err
 	}
@@ -312,7 +345,7 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 	if r.Message != nil && r.Message.Filename != "" {
 		s.file, s.line = s.toHost(r.Message.Filename), r.Message.Lineno
 	}
-	return &r, xmlStr, nil
+	return &r, xmlStr, r.err(name)
 }
 
 // cmd is the locking wrapper used by public methods.
@@ -324,30 +357,60 @@ func (s *session) cmd(name, args string) (*xResp, string, error) {
 
 // --- path translation -------------------------------------------------------
 
+// under reports whether p equals root or is inside root at a path boundary.
+func under(p, root string) bool {
+	if root == "/" {
+		return path.IsAbs(p)
+	}
+	return root != "" && (p == root || strings.HasPrefix(p, root+"/"))
+}
+
 // toContainer maps a host (absolute or project-relative) path to the container path.
 func (s *session) toContainer(p string) string {
+	if s.dockerRoot == "" {
+		if path.IsAbs(p) {
+			return p
+		}
+		return path.Join(s.localRoot, p)
+	}
+	cleanPath := path.Clean(p)
 	switch {
-	case strings.HasPrefix(p, s.dockerRoot):
+	// When both roots match, the more specific root takes precedence.
+	case under(cleanPath, s.localRoot) && (!under(cleanPath, s.dockerRoot) || len(s.localRoot) > len(s.dockerRoot)):
+		return path.Join(s.dockerRoot, strings.TrimPrefix(cleanPath, s.localRoot))
+	case under(cleanPath, s.dockerRoot):
 		return p
-	case strings.HasPrefix(p, s.localRoot):
-		return s.dockerRoot + p[len(s.localRoot):]
-	case strings.HasPrefix(p, "/"):
+	case path.IsAbs(p):
 		return p // some other absolute path; pass through
 	default:
-		return s.dockerRoot + "/" + strings.TrimLeft(p, "/")
+		return path.Join(s.dockerRoot, p)
 	}
 }
 
 // toHost maps a container fileuri/path back to a host path for display.
 func (s *session) toHost(fileuri string) string {
-	p := strings.TrimPrefix(fileuri, "file://")
-	if strings.HasPrefix(p, s.dockerRoot) {
-		return s.localRoot + p[len(s.dockerRoot):]
+	p := fileuri
+	if strings.HasPrefix(fileuri, "file://") {
+		if u, err := url.Parse(fileuri); err == nil {
+			p = u.Path
+		} else {
+			p = strings.TrimPrefix(fileuri, "file://")
+		}
+	}
+	cleanPath := path.Clean(p)
+	if under(cleanPath, s.dockerRoot) {
+		return path.Join(s.localRoot, strings.TrimPrefix(cleanPath, s.dockerRoot))
 	}
 	return p
 }
 
-func fileURI(containerPath string) string { return "file://" + containerPath }
+func fileURI(containerPath string) string {
+	return (&url.URL{Scheme: "file", Path: containerPath}).String()
+}
+
+func breakpointSetArgs(containerPath string, line int) string {
+	return fmt.Sprintf("-t line -f %s -n %d", quoteArg(fileURI(containerPath)), line)
+}
 
 // --- public command methods (used by both MCP and HTTP front-ends) ----------
 
@@ -371,9 +434,10 @@ func (s *session) SetBreakpoint(file string, line int) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cpath := s.toContainer(file)
-	b := bp{file: cpath, line: line}
+	s.nextQID++
+	b := bp{file: cpath, line: line, qid: "q" + strconv.Itoa(s.nextQID)}
 	if s.conn != nil && (s.state == "started" || s.state == "break") {
-		r, _, err := s.rawLocked("breakpoint_set", fmt.Sprintf("-t line -f %s -n %d", fileURI(cpath), line))
+		r, _, err := s.rawLocked("breakpoint_set", breakpointSetArgs(cpath, line))
 		if err != nil {
 			return "", err
 		}
@@ -382,44 +446,75 @@ func (s *session) SetBreakpoint(file string, line int) (string, error) {
 		return fmt.Sprintf("breakpoint set id=%s %s:%d", b.id, cpath, line), nil
 	}
 	s.pending = append(s.pending, b)
-	return fmt.Sprintf("breakpoint queued %s:%d (applied on next session)", cpath, line), nil
+	return fmt.Sprintf("breakpoint queued %s %s:%d (applied on next session)", b.qid, cpath, line), nil
 }
 
 func (s *session) BreakpointList() (string, error) {
-	r, _, err := s.cmd("breakpoint_list", "")
-	if err != nil {
-		return "", err
-	}
-	if len(r.Breakpoints) == 0 {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		var b strings.Builder
-		for _, p := range s.pending {
-			fmt.Fprintf(&b, "queued %s:%d\n", s.toHost(p.file), p.line)
-		}
-		if b.Len() == 0 {
-			return "(none)", nil
-		}
-		return b.String(), nil
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var b strings.Builder
-	for _, e := range r.Breakpoints {
-		fmt.Fprintf(&b, "id=%s %s %s:%d\n", e.ID, e.State, s.toHost(e.Filename), e.Lineno)
+	if s.conn != nil {
+		r, _, err := s.rawLocked("breakpoint_list", "")
+		if err != nil {
+			return "", err
+		}
+		for _, e := range r.Breakpoints {
+			fmt.Fprintf(&b, "id=%s %s %s:%d\n", e.ID, e.State, s.toHost(e.Filename), e.Lineno)
+		}
+	}
+	for _, p := range s.pending {
+		if p.err != "" {
+			fmt.Fprintf(&b, "rejected %s %s:%d: %s\n", p.qid, s.toHost(p.file), p.line, p.err)
+		} else if s.conn == nil || p.id == "" {
+			fmt.Fprintf(&b, "queued %s %s:%d\n", p.qid, s.toHost(p.file), p.line)
+		}
+	}
+	if b.Len() == 0 {
+		return "(none)", nil
 	}
 	return b.String(), nil
 }
 
+func validateBreakpointID(id string) error {
+	if id == "" {
+		return fmt.Errorf("breakpoint id must be numeric")
+	}
+	for _, c := range id {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("breakpoint id must be numeric: %q", id)
+		}
+	}
+	return nil
+}
+
 func (s *session) BreakpointRemove(id string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("id required")
+	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	index, engineID := -1, id
 	for i, p := range s.pending {
-		if p.id == id {
-			s.pending = append(s.pending[:i], s.pending[i+1:]...)
+		if p.qid == id || p.id == id {
+			index, engineID = i, p.id
 			break
 		}
 	}
-	s.mu.Unlock()
-	if _, _, err := s.cmd("breakpoint_remove", "-d "+id); err != nil {
-		return "", err
+	if engineID != "" {
+		if err := validateBreakpointID(engineID); err != nil {
+			return "", err
+		}
+	}
+	if index == -1 && s.conn == nil {
+		return "", fmt.Errorf("no active session")
+	}
+	if s.conn != nil && engineID != "" {
+		if _, _, err := s.rawLocked("breakpoint_remove", "-d "+engineID); err != nil {
+			return "", err
+		}
+	}
+	if index != -1 {
+		s.pending = append(s.pending[:index], s.pending[index+1:]...)
 	}
 	return "removed " + id, nil
 }
@@ -428,6 +523,14 @@ func (s *session) BreakpointRemove(id string) (string, error) {
 // applied (active in the engine). Safe to call with or without an active session.
 func (s *session) BreakpointClearAll() (string, error) {
 	s.mu.Lock()
+	for _, p := range s.pending {
+		if p.id != "" {
+			if err := validateBreakpointID(p.id); err != nil {
+				s.mu.Unlock()
+				return "", err
+			}
+		}
+	}
 	pending := s.pending
 	s.pending = nil
 	s.mu.Unlock()
@@ -493,9 +596,6 @@ func (s *session) Eval(expr string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if r.Error != nil {
-		return "", fmt.Errorf("eval error %s: %s", r.Error.Code, r.Error.Message)
-	}
 	if len(r.Props) == 0 {
 		return "(no result)", nil
 	}
@@ -503,7 +603,10 @@ func (s *session) Eval(expr string) (string, error) {
 }
 
 func (s *session) PropertyGet(name string, depth int) (string, error) {
-	r, _, err := s.cmd("property_get", fmt.Sprintf("-d %d -n %s", depth, name))
+	if strings.ContainsRune(name, 0) {
+		return "", fmt.Errorf("name must not contain NUL")
+	}
+	r, _, err := s.cmd("property_get", fmt.Sprintf("-d %d -n %s", depth, quoteArg(name)))
 	if err != nil {
 		return "", err
 	}
@@ -514,9 +617,16 @@ func (s *session) PropertyGet(name string, depth int) (string, error) {
 }
 
 func (s *session) PropertySet(name, value string) (string, error) {
+	if strings.ContainsRune(name, 0) {
+		return "", fmt.Errorf("name must not contain NUL")
+	}
 	enc := base64.StdEncoding.EncodeToString([]byte(value))
-	if _, _, err := s.cmd("property_set", fmt.Sprintf("-n %s -- %s", name, enc)); err != nil {
+	r, _, err := s.cmd("property_set", fmt.Sprintf("-n %s -- %s", quoteArg(name), enc))
+	if err != nil {
 		return "", err
+	}
+	if r.Success == "0" {
+		return "", fmt.Errorf("property_set failed: success=\"0\"")
 	}
 	return fmt.Sprintf("%s = %s", name, value), nil
 }

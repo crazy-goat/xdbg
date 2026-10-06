@@ -60,8 +60,8 @@ func newMCP(s *session) *mcpServer {
 	t := []mcpTool{
 		{"status", "Current debug session state and location.", obj(nil)},
 		{"set_breakpoint", "Set a line breakpoint. `file` is a HOST path (absolute or project-relative); it is auto-translated to the container path. Queued if no session is active yet.", obj(map[string]any{"file": prop("string", "host path, e.g. src/Foo/Bar.php"), "line": prop("integer", "1-based line")}, "file", "line")},
-		{"breakpoint_list", "List breakpoints (locations shown as host paths).", obj(nil)},
-		{"breakpoint_remove", "Remove a breakpoint by id.", obj(map[string]any{"id": prop("string", "breakpoint id")}, "id")},
+		{"breakpoint_list", "List engine, queued, and rejected breakpoints (host paths). Safe with or without an active session.", obj(nil)},
+		{"breakpoint_remove", "Remove a breakpoint by engine id or local handle (e.g. q1). Use the handle from set_breakpoint or breakpoint_list to remove queued breakpoints without a session. Engine errors leave the local queue unchanged.", obj(map[string]any{"id": prop("string", "engine id or local handle (e.g. q1)")}, "id")},
 		{"breakpoint_clear", "Clear ALL breakpoints (queued and applied). Safe with or without an active session.", obj(nil)},
 		{"request", "Fire an HTTP request at the app (any method, headers, body) and run to completion. Does NOT pause at breakpoints — use listen first, then trigger the request separately to debug interactively.", obj(map[string]any{
 			"url":       prop("string", "full URL, e.g. http://127.0.0.1:8090/api/foo"),
@@ -70,10 +70,10 @@ func newMCP(s *session) *mcpServer {
 			"body":      prop("string", "raw request body (e.g. JSON)"),
 			"timeoutMs": prop("integer", "max wait for the Xdebug connection (default 15000)"),
 		}, "url")},
-		{"request_from_files", "Like request but reads headers and body from files on disk. Use this when headers contain sensitive values (JWT tokens, cookies) that should not appear inline. headers_file: path to a text file with \"Name: Value\" lines (blank lines and # comments ignored). body_file: path to raw body bytes.", obj(map[string]any{
+		{"request_from_files", "Like request but reads headers and body from files on disk. Use files to keep sensitive header values (JWT tokens, cookies) out of tool arguments. headers_file: a JSON object with string values (one line or multiple lines), or \"Name: Value\" lines. The line format ignores blank lines and lines that start with #. Header names in the line format must use RFC 7230 token characters. Host sets the request Host, regardless of case. body_file: raw request body bytes.", obj(map[string]any{
 			"url":          prop("string", "full URL, e.g. http://127.0.0.1:8090/api/foo"),
 			"method":       prop("string", "HTTP method (default GET)"),
-			"headers_file": prop("string", "path to headers file (JSON or Name: Value lines)"),
+			"headers_file": prop("string", "path to a JSON object with string values (one line or multiple lines), or Name: Value lines; the line format ignores blank lines and lines that start with #, and requires RFC 7230 token names; Host sets the request Host, regardless of case"),
 			"body_file":    prop("string", "path to body file (raw bytes)"),
 			"timeoutMs":    prop("integer", "max wait for the Xdebug connection (default 15000)"),
 		}, "url")},
