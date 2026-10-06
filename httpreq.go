@@ -46,12 +46,8 @@ func (s *session) doAndWait(req *http.Request, timeout time.Duration) (string, e
 	select {
 	case <-ready:
 	case err := <-reqErr:
-		select {
-		case <-ready:
-			// A late client error must not override a completed DBGp handshake.
-		default:
-			s.closeLn()
-			return "", fmt.Errorf("request failed: %w", err)
+		if err := s.requestErrorUnlessReady(ready, err); err != nil {
+			return "", err
 		}
 	case <-time.After(timeout):
 		s.closeLn()
@@ -72,6 +68,17 @@ func (s *session) doAndWait(req *http.Request, timeout time.Duration) (string, e
 		return "request fired; script ran to completion", nil
 	}
 	return "request fired; session paused at script start — call run/step to drive", nil
+}
+
+// requestErrorUnlessReady preserves a completed DBGp result after a late client error.
+func (s *session) requestErrorUnlessReady(ready <-chan struct{}, err error) error {
+	select {
+	case <-ready:
+		return nil
+	default:
+		s.closeLn()
+		return fmt.Errorf("request failed: %w", err)
+	}
 }
 
 // DoRequest fires an arbitrary HTTP request (method/headers/body) at the app,
@@ -167,6 +174,16 @@ func parseHeadersFile(data []byte) (map[string]string, error) {
 	if bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
 		if err := json.Unmarshal(data, &m); err != nil {
 			return nil, err
+		}
+		// JSON null silently becomes an empty string, so inspect the raw values.
+		var values map[string]json.RawMessage
+		if err := json.Unmarshal(data, &values); err != nil {
+			return nil, err
+		}
+		for name, value := range values {
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return nil, fmt.Errorf("header %q must have a string value, not null", name)
+			}
 		}
 		return m, nil
 	}

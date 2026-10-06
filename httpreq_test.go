@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,13 +33,46 @@ func TestParseHeadersFile_JSON(t *testing.T) {
 			}
 		})
 	}
-	for _, data := range []string{`{"X-A":`, `{"X-A":1}`, `{"X-A":"1"} trailing`} {
+	t.Run("empty string", func(t *testing.T) {
+		got, err := parseHeadersFile([]byte(`{"X-A":""}`))
+		if err != nil || !reflect.DeepEqual(got, map[string]string{"X-A": ""}) {
+			t.Fatalf("parseHeadersFile = %v, %v; want a valid empty string", got, err)
+		}
+	})
+	for _, data := range []string{`{"X-A":`, `{"X-A":null}`, `{"X-A":1}`, `{"X-A":true}`, `{"X-A":[]}`, `{"X-A":{}}`, `{"X-A":"1"} trailing`} {
 		t.Run(data, func(t *testing.T) {
 			got, err := parseHeadersFile([]byte(data))
 			if err == nil || got != nil {
 				t.Fatalf("parseHeadersFile(%q) = %v, %v; want a JSON error", data, got, err)
 			}
 		})
+	}
+}
+
+func TestDoRequestFromFiles_RejectsNull(t *testing.T) {
+	s := newSession("", "")
+	// Invalid listen address: a parse error must return before a listener opens.
+	s.dbgAddr = "invalid"
+	received := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		received <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "headers.json")
+	if err := os.WriteFile(file, []byte(`{"X-A":null}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	text, err := s.DoRequestFromFiles(server.URL, "GET", file, "", 5*time.Second)
+	server.Close()
+	if err == nil || !strings.HasPrefix(err.Error(), "headers_file parse:") || !strings.Contains(err.Error(), "null") || text != "" {
+		t.Fatalf("DoRequestFromFiles = %q, %v; want a parse error for null", text, err)
+	}
+	select {
+	case <-received:
+		t.Fatal("invalid JSON header values must not send an HTTP request")
+	default:
 	}
 }
 
@@ -248,4 +283,185 @@ func TestDoRequest_ClientErrorFailsFast(t *testing.T) {
 			t.Fatal("the HTTP handler did not finish")
 		}
 	})
+}
+
+func TestRequestErrorUnlessReady(t *testing.T) {
+	for _, isReady := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ready=%t", isReady), func(t *testing.T) {
+			s := newSession("", "")
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.ln = ln
+			t.Cleanup(s.closeLn)
+			ready := make(chan struct{})
+			if isReady {
+				close(ready)
+			}
+			reqErr := make(chan error, 1)
+			reqErr <- io.EOF
+			// Both results exist before this error-selected path runs.
+			err = s.requestErrorUnlessReady(ready, <-reqErr)
+			if isReady {
+				if err != nil {
+					t.Fatalf("a ready DBGp result must win over the client error: %v", err)
+				}
+				if s.ln != ln {
+					t.Fatal("a late error must not close the listener")
+				}
+			} else {
+				if err == nil || !strings.HasPrefix(err.Error(), "request failed:") || !errors.Is(err, io.EOF) {
+					t.Fatalf("error = %v; want the wrapped HTTP client error", err)
+				}
+				if s.ln != nil {
+					t.Fatal("an early client error must close the listener")
+				}
+			}
+		})
+	}
+}
+
+func servePausedRequestTestEngine(addr string, connReady chan<- net.Conn) error {
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("engine dial: %w", err)
+	}
+	defer conn.Close()
+	connReady <- conn
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Write([]byte(dbgpPacket(xmlProlog + `<init fileuri="file:///index.php"/>`))); err != nil {
+		return fmt.Errorf("engine init: %w", err)
+	}
+	r := bufio.NewReader(conn)
+	for _, want := range []string{"feature_set", "feature_set", "feature_set", "breakpoint_set", "run", "stop"} {
+		command, err := r.ReadString(0)
+		if err != nil {
+			return fmt.Errorf("engine read %s: %w", want, err)
+		}
+		fields := strings.Fields(strings.TrimSuffix(command, "\x00"))
+		if len(fields) < 3 || fields[0] != want || fields[1] != "-i" {
+			return fmt.Errorf("engine command = %q, want %s", command, want)
+		}
+		attrs := ` success="1"`
+		switch want {
+		case "breakpoint_set":
+			attrs = ` id="7"`
+		case "run":
+			attrs = ` status="break" reason="ok"`
+		case "stop":
+			attrs = ` status="stopped" reason="ok"`
+		}
+		response := fmt.Sprintf(`<response command="%s" transaction_id="%s"%s/>`, want, fields[2], attrs)
+		if _, err := conn.Write([]byte(dbgpPacket(xmlProlog + response))); err != nil {
+			return fmt.Errorf("engine response: %w", err)
+		}
+	}
+	return nil
+}
+
+type requestTestTransport struct {
+	clientErr chan<- error
+}
+
+func (tr requestTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	tr.clientErr <- err
+	return resp, err
+}
+
+func TestDoRequest_PausedSessionSurvivesClientError(t *testing.T) {
+	s := newRequestTestSession(t)
+	if _, err := s.SetBreakpoint("/index.php", 3); err != nil {
+		t.Fatal(err)
+	}
+	ready := s.ready
+	engineErr := make(chan error, 1)
+	connReady := make(chan net.Conn, 1)
+	httpConnReady := make(chan net.Conn, 1)
+	failHTTP := make(chan struct{})
+	handlerErr := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			handlerErr <- err
+			return
+		}
+		defer conn.Close()
+		httpConnReady <- conn
+		go func() { engineErr <- servePausedRequestTestEngine(s.dbgAddr, connReady) }()
+		select {
+		case <-ready:
+		case <-time.After(5 * time.Second):
+			handlerErr <- fmt.Errorf("the paused DBGp session did not become ready")
+			return
+		}
+		select {
+		case <-failHTTP:
+		case <-time.After(5 * time.Second):
+			handlerErr <- fmt.Errorf("the test did not release the HTTP failure")
+			return
+		}
+		handlerErr <- nil
+	}))
+	defer server.Close()
+
+	clientErr := make(chan error, 1)
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: requestTestTransport{clientErr: clientErr}}
+	defer func() { http.DefaultClient = oldClient }()
+
+	text, err := s.DoRequest(server.URL, "GET", nil, "", 5*time.Second)
+	// Close engine and hijacked HTTP connections even if an assertion fails.
+	select {
+	case conn := <-connReady:
+		defer conn.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("the fake DBGp engine did not connect")
+	}
+	select {
+	case conn := <-httpConnReady:
+		defer conn.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("the HTTP handler did not accept the request")
+	}
+	if err != nil || text != "request fired; session paused at script start — call run/step to drive" {
+		t.Fatalf("DoRequest = %q, %v; want a paused session", text, err)
+	}
+	if status := s.Status(); !strings.Contains(status, "state=started") {
+		t.Fatalf("status = %q; want an active paused session", status)
+	}
+	close(failHTTP)
+	select {
+	case err := <-handlerErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the HTTP handler did not fail the request")
+	}
+	select {
+	case err := <-clientErr:
+		if err == nil || !errors.Is(err, io.EOF) {
+			t.Fatalf("HTTP client error = %v; want EOF after the paused result", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the HTTP client did not report the late error")
+	}
+
+	text, err = s.step("run")
+	if err != nil || !strings.Contains(text, "state=break") {
+		t.Fatalf("run after client error = %q, %v; want a usable paused session", text, err)
+	}
+	if _, err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-engineErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the fake DBGp engine did not finish")
+	}
 }
