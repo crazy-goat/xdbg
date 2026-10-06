@@ -273,15 +273,18 @@ breakpoints, and pauses at the first break. When no breakpoints are set, the
 script runs to completion and the request returns. To debug interactively,
 set breakpoints first, then call `xdbg_request` — the tool returns once the
 session is paused, and you drive it with `xdbg_run` / `xdbg_step_*` / etc.
+A `Host` header sets the request Host, regardless of case, without a change to the destination URL.
+HTTP client errors return immediately as `request failed: <error>` instead of an Xdebug connection timeout.
 
 ### `xdbg_request_from_files(string url, string? method, string? headers_file, string? body_file, int? timeoutMs)`
-`url` is required; `headers_file` is a path to a file with `Name: Value`
-lines (blank lines and `#` comments ignored — or a JSON object); `body_file`
-is a path to raw body bytes; `timeoutMs` defaults to 15000. Like
-`xdbg_request` but reads headers and body from disk. Use it when headers
-contain sensitive values (JWT tokens, cookies, API keys) that should not
-appear inline in the chat or tool arguments. The files are read once, at
-call time.
+`url` is required. `headers_file` is a path to a JSON object with string values
+(one line or multiple lines), or a file with `Name: Value` lines.
+The line format ignores blank lines and lines that start with `#`.
+Header names in the line format must use RFC 7230 token characters; empty or invalid names return an error with the line number.
+`body_file` is a path to raw body bytes; `timeoutMs` defaults to 15000.
+Like `xdbg_request`, this tool supports a `Host` override and returns HTTP client errors immediately.
+It reads headers and body from disk once, at call time.
+Use files to keep sensitive header values (JWT tokens, cookies, API keys) out of the chat and tool arguments.
 
 ### `xdbg_listen(int? timeoutMs)`
 `timeoutMs` defaults to 30000. Arms the DBGp listener and blocks until the

@@ -70,10 +70,10 @@ func newMCP(s *session) *mcpServer {
 			"body":      prop("string", "raw request body (e.g. JSON)"),
 			"timeoutMs": prop("integer", "max wait for the Xdebug connection (default 15000)"),
 		}, "url")},
-		{"request_from_files", "Like request but reads headers and body from files on disk. Use this when headers contain sensitive values (JWT tokens, cookies) that should not appear inline. headers_file: path to a text file with \"Name: Value\" lines (blank lines and # comments ignored). body_file: path to raw body bytes.", obj(map[string]any{
+		{"request_from_files", "Like request but reads headers and body from files on disk. Use files to keep sensitive header values (JWT tokens, cookies) out of tool arguments. headers_file: a JSON object with string values (one line or multiple lines), or \"Name: Value\" lines. The line format ignores blank lines and lines that start with #. Header names in the line format must use RFC 7230 token characters. Host sets the request Host, regardless of case. body_file: raw request body bytes.", obj(map[string]any{
 			"url":          prop("string", "full URL, e.g. http://127.0.0.1:8090/api/foo"),
 			"method":       prop("string", "HTTP method (default GET)"),
-			"headers_file": prop("string", "path to headers file (JSON or Name: Value lines)"),
+			"headers_file": prop("string", "path to a JSON object with string values (one line or multiple lines), or Name: Value lines; the line format ignores blank lines and lines that start with #, and requires RFC 7230 token names; Host sets the request Host, regardless of case"),
 			"body_file":    prop("string", "path to body file (raw bytes)"),
 			"timeoutMs":    prop("integer", "max wait for the Xdebug connection (default 15000)"),
 		}, "url")},
