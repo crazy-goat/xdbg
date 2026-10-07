@@ -20,6 +20,9 @@ import (
 
 const maxPacketLen = 64 << 20 // 64 MiB
 
+// maxSkippedPackets limits how many non-matching packets rawLocked skips for one command.
+const maxSkippedPackets = 1000
+
 // handshakeTimeout bounds the DBGp handshake (the <init> packet plus the
 // feature/breakpoint round trips) after Xdebug has connected. It is a variable
 // so tests can shorten it.
@@ -371,14 +374,27 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 		s.dropLocked()
 		return nil, "", err
 	}
-	xmlStr, err := s.readPacket()
-	if err != nil {
-		s.dropLocked()
-		return nil, "", err
-	}
+	want := strconv.Itoa(s.tx)
 	var r xResp
-	if err := unmarshal(xmlStr, &r); err != nil {
-		return nil, xmlStr, fmt.Errorf("parse %s response: %w", name, err)
+	var xmlStr string
+	for skipped := 0; ; skipped++ {
+		if skipped > maxSkippedPackets {
+			return nil, "", fmt.Errorf("%s: no response with transaction_id %s after %d other packets", name, want, maxSkippedPackets)
+		}
+		var err error
+		xmlStr, err = s.readPacket()
+		if err != nil {
+			s.dropLocked() // keep the #36 behaviour: drop the connection on a read error
+			return nil, "", err
+		}
+		r = xResp{}
+		if err = unmarshal(xmlStr, &r); err != nil {
+			return nil, xmlStr, fmt.Errorf("parse %s response: %w", name, err)
+		}
+		if r.XMLName.Local == "response" && r.TransactionID == want {
+			break
+		}
+		log.Printf("dropping DBGp packet while waiting for %s (tx %s): <%s transaction_id=%q>", name, want, r.XMLName.Local, r.TransactionID)
 	}
 	if r.Status != "" {
 		s.state = r.Status

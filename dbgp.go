@@ -19,16 +19,18 @@ func quoteArg(s string) string {
 // DBGp response structs (we only model the fields we use).
 
 type xResp struct {
-	Status      string  `xml:"status,attr"`
-	Reason      string  `xml:"reason,attr"`
-	Command     string  `xml:"command,attr"`
-	Success     string  `xml:"success,attr"`
-	ID          string  `xml:"id,attr"`    // breakpoint_set returns the new id here
-	Message     *xMsg   `xml:"message"`    // xdebug:message on break/step
-	Stacks      []xStk  `xml:"stack"`      // stack_get
-	Props       []xProp `xml:"property"`   // context_get / eval / property_get
-	Breakpoints []xBkpt `xml:"breakpoint"` // breakpoint_list
-	Error       *xErr   `xml:"error"`
+	XMLName       xml.Name // root element: response, stream, notify, ...
+	TransactionID string   `xml:"transaction_id,attr"`
+	Status        string   `xml:"status,attr"`
+	Reason        string   `xml:"reason,attr"`
+	Command       string   `xml:"command,attr"`
+	Success       string   `xml:"success,attr"`
+	ID            string   `xml:"id,attr"`    // breakpoint_set returns the new id here
+	Message       *xMsg    `xml:"message"`    // xdebug:message on break/step
+	Stacks        []xStk   `xml:"stack"`      // stack_get
+	Props         []xProp  `xml:"property"`   // context_get / eval / property_get
+	Breakpoints   []xBkpt  `xml:"breakpoint"` // breakpoint_list
+	Error         *xErr    `xml:"error"`
 }
 
 func (r *xResp) err(cmd string) error {

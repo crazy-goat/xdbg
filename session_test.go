@@ -50,14 +50,35 @@ func newActivePipe(t *testing.T) (*session, *fakeEngine) {
 	return s, eng
 }
 
+// txOf returns the transaction id of a DBGp command line, for example "1" for
+// "run -i 1", or "" when the line carries no -i.
+func txOf(line string) string {
+	line = strings.TrimSuffix(line, "\x00")
+	parts := strings.SplitN(line, " ", 4) // name, "-i", tx, rest
+	if len(parts) < 3 || parts[1] != "-i" {
+		return ""
+	}
+	return parts[2]
+}
+
+// withTx adds transaction_id to a <response> that does not carry one, so the
+// debugger's reply matching accepts it.
+func withTx(response, tx string) string {
+	if tx == "" || strings.Contains(response, "transaction_id=") {
+		return response
+	}
+	return strings.Replace(response, "<response", `<response transaction_id="`+tx+`"`, 1)
+}
+
 func (e *fakeEngine) respond(responses ...string) {
 	e.t.Helper()
 	r := bufio.NewReader(e.conn)
 	for _, response := range responses {
-		if _, err := r.ReadString(0); err != nil {
+		line, err := r.ReadString(0)
+		if err != nil {
 			return
 		}
-		e.send(xmlProlog + response)
+		e.send(xmlProlog + withTx(response, txOf(line)))
 	}
 }
 
@@ -72,7 +93,37 @@ func (e *fakeEngine) respondTo(command, response string) {
 	if line != command {
 		e.t.Errorf("engine command = %q; want %q", line, command)
 	}
-	e.send(xmlProlog + response)
+	e.send(xmlProlog + withTx(response, txOf(line)))
+}
+
+// readCmd reads one command that xdbg sent (up to the NUL byte). It returns the
+// command without the "-i <tx>" part, for example `property_get -d 0 -n "$a"`,
+// and the transaction id, for the reply.
+func (e *fakeEngine) readCmd() (cmd, tx string) {
+	e.t.Helper()
+	_ = e.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var b []byte
+	one := make([]byte, 1)
+	for {
+		if _, err := e.conn.Read(one); err != nil {
+			e.t.Errorf("engine read: %v", err)
+			return "", ""
+		}
+		if one[0] == 0 {
+			break
+		}
+		b = append(b, one[0])
+	}
+	parts := strings.SplitN(string(b), " ", 4) // name, "-i", tx, rest
+	if len(parts) < 3 || parts[1] != "-i" {
+		e.t.Errorf("engine got a command without -i: %q", b)
+		return string(b), ""
+	}
+	cmd = parts[0]
+	if len(parts) == 4 {
+		cmd += " " + parts[3]
+	}
+	return cmd, parts[2]
 }
 
 // drain reads and discards the commands the debugger sends.
@@ -221,7 +272,7 @@ func TestRawLockedWellFormedResponse(t *testing.T) {
 	s.conn = conn
 	s.r = bufio.NewReader(conn)
 	eng.drain()
-	go eng.send(xmlProlog + `<response command="run" status="break"/>`)
+	go eng.send(xmlProlog + `<response command="run" transaction_id="1" status="break"/>`)
 
 	r, _, err := s.cmd("run", "")
 	if err != nil || r == nil || r.Status != "break" || s.state != "break" {
@@ -229,9 +280,117 @@ func TestRawLockedWellFormedResponse(t *testing.T) {
 	}
 }
 
+func TestRawLockedSkipsStreamPackets(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.conn = conn
+	s.r = bufio.NewReader(conn)
+	s.state = "started"
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	go func() {
+		eng.readCmd()
+		eng.send(xmlProlog + `<stream type="stdout" encoding="base64">T1VUCg==</stream>`)
+		eng.send(xmlProlog + `<stream type="stdout" encoding="base64">T1VUCg==</stream>`)
+		eng.send(xmlProlog + `<response command="step_over" transaction_id="1" status="break" reason="ok"/>`)
+	}()
+
+	r, _, err := s.cmd("step_over", "")
+	if err != nil || r == nil || r.Status != "break" || s.state != "break" {
+		t.Fatalf("got %+v, %v, state %q", r, err, s.state)
+	}
+}
+
+func TestRawLockedSkipsNotify(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.conn = conn
+	s.r = bufio.NewReader(conn)
+	s.state = "started"
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	go func() {
+		eng.readCmd()
+		eng.send(xmlProlog + `<notify name="breakpoint_resolved"/>`)
+		eng.send(xmlProlog + `<response command="breakpoint_set" transaction_id="1" id="70001"/>`)
+	}()
+
+	r, _, err := s.cmd("breakpoint_set", "-t line -f file:///d/a.php -n 3")
+	if err != nil || r == nil || r.ID != "70001" {
+		t.Fatalf("got %+v, %v", r, err)
+	}
+}
+
+func TestRawLockedSkipsUnsolicitedResponse(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.conn = conn
+	s.r = bufio.NewReader(conn)
+	s.state = "started"
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	go func() {
+		eng.readCmd()
+		eng.send(xmlProlog + `<response command="frobnicate" transaction_id="1"><error code="4"><message>unimplemented command</message></error></response>`)
+		eng.readCmd()
+		eng.send(xmlProlog + `<response status="stopping" reason="ok"/>`)
+		eng.send(xmlProlog + `<response command="stack_get" transaction_id="2"><stack where="{main}" level="0" filename="file:///d/a.php" lineno="3"/></response>`)
+	}()
+
+	if _, _, err := s.cmd("frobnicate", ""); err == nil {
+		t.Fatal("frobnicate = nil error, want the engine error")
+	}
+	r, _, err := s.cmd("stack_get", "")
+	if err != nil || r == nil || len(r.Stacks) != 1 {
+		t.Fatalf("got %+v, %v; want one stack frame", r, err)
+	}
+	if s.state == "stopping" {
+		t.Fatalf("state = %q; an unsolicited response must not be adopted", s.state)
+	}
+}
+
+func TestRawLockedSkipsWrongTransactionID(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.conn = conn
+	s.r = bufio.NewReader(conn)
+	s.state = "started"
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	go func() {
+		eng.readCmd()
+		eng.send(xmlProlog + `<response command="status" transaction_id="99" status="stopping"/>`)
+		eng.send(xmlProlog + `<response command="run" transaction_id="1" status="break"/>`)
+	}()
+
+	r, _, err := s.cmd("run", "")
+	if err != nil || r == nil || r.Status != "break" {
+		t.Fatalf("got %+v, %v; want the real reply", r, err)
+	}
+	if s.state == "stopping" {
+		t.Fatalf("state = %q; a wrong transaction_id must not be adopted", s.state)
+	}
+}
+
+func TestRawLockedTooManySkippedPackets(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.conn = conn
+	s.r = bufio.NewReader(conn)
+	s.state = "started"
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	go func() {
+		eng.readCmd()
+		for i := 0; i <= maxSkippedPackets; i++ {
+			eng.send(xmlProlog + `<stream type="stdout" encoding="base64">T1VUCg==</stream>`)
+		}
+	}()
+
+	_, _, err := s.cmd("run", "")
+	if err == nil || !strings.Contains(err.Error(), "no response with transaction_id 1") {
+		t.Fatalf("err = %v; want the skipped-packet limit error", err)
+	}
+}
+
 func TestRawLockedReturnsDBGpError(t *testing.T) {
 	s, eng := newActivePipe(t)
-	response := `<response command="run" status="break"><message filename="file:///d/a.php" lineno="9"/>` +
+	response := `<response command="run" transaction_id="1" status="break"><message filename="file:///d/a.php" lineno="9"/>` +
 		`<error code="5"><message><![CDATA[ command is not available ]]></message></error></response>`
 	go eng.respond(response, `<response command="stack_get" status="break"/>`)
 
@@ -546,7 +705,7 @@ func TestBreakpointRemoveEngineErrorKeepsState(t *testing.T) {
 					return
 				}
 				command <- line
-				eng.send(xmlProlog + `<response command="breakpoint_remove"><error code="205"><message>no such breakpoint</message></error></response>`)
+				eng.send(xmlProlog + withTx(`<response command="breakpoint_remove"><error code="205"><message>no such breakpoint</message></error></response>`, txOf(line)))
 				eng.respond(`<response command="breakpoint_list"><breakpoint id="1001" state="enabled" filename="file:///d/a.php" lineno="3"/></response>`)
 			}()
 			s.adopt(conn)
@@ -648,7 +807,7 @@ func TestBreakpointRemoveModes(t *testing.T) {
 						return
 					}
 					command <- line
-					eng.send(xmlProlog + `<response command="breakpoint_remove"/>`)
+					eng.send(xmlProlog + withTx(`<response command="breakpoint_remove"/>`, txOf(line)))
 				}()
 			}
 			var wantPending []bp
@@ -738,7 +897,7 @@ func TestBreakpointHandleAcrossSessions(t *testing.T) {
 				return
 			}
 			command <- line
-			eng.send(xmlProlog + `<response command="breakpoint_remove"/>`)
+			eng.send(xmlProlog + withTx(`<response command="breakpoint_remove"/>`, txOf(line)))
 		}()
 		s.adopt(conn)
 		if len(s.pending) != 1 || s.pending[0].qid != "q1" || s.pending[0].id != id {
@@ -929,7 +1088,7 @@ func TestEvalEngineError(t *testing.T) {
 
 func TestRawEngineError(t *testing.T) {
 	s, eng := newActivePipe(t)
-	response := `<response command="property_get"><error code="300"><message>can not get property</message></error></response>`
+	response := `<response command="property_get" transaction_id="1"><error code="300"><message>can not get property</message></error></response>`
 	go eng.respond(response)
 
 	raw, err := s.Raw("property_get -n $missing")
@@ -1284,13 +1443,10 @@ func TestAdoptWellFormedInit(t *testing.T) {
 	s.pending = []bp{{file: "/d/a.php", line: 3}}
 	go func() {
 		eng.send(xmlProlog + `<init fileuri="file:///d/index.php"/>`)
-		buf := make([]byte, 4096)
 		// Answer every command (3x feature_set, breakpoint_set) with a generic response.
 		for i := 0; i < 4; i++ {
-			if _, err := eng.conn.Read(buf); err != nil {
-				return
-			}
-			eng.send(xmlProlog + `<response command="x" id="7"/>`)
+			_, tx := eng.readCmd()
+			eng.send(xmlProlog + `<response command="x" transaction_id="` + tx + `" id="7"/>`)
 		}
 	}()
 
@@ -1464,7 +1620,7 @@ func TestAdoptBreakpointWithEmptyDockerRoot(t *testing.T) {
 			if strings.HasPrefix(line, "breakpoint_set ") {
 				command <- line
 			}
-			eng.send(xmlProlog + `<response command="x" id="7"/>`)
+			eng.send(xmlProlog + withTx(`<response command="x" id="7"/>`, txOf(line)))
 		}
 	}()
 
