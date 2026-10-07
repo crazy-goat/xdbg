@@ -327,8 +327,10 @@ with `--container-exec`) and waits for the resulting Xdebug connection. When
 no breakpoints are set, the script runs to completion and the command output
 is returned. When breakpoints are set, the session pauses at the first break
 and the caller drives it with `xdbg_run` / `xdbg_step_*` — the command output
-is not available until the script finishes. This is the CLI equivalent of
-`xdbg_request`.
+is not available until the script finishes. If the command exits before Xdebug
+connects (a bad service, a typo, or Xdebug off in the container), it returns
+promptly with the command output and exit status instead of waiting for
+`timeoutMs`. This is the CLI equivalent of `xdbg_request`.
 
 ### `xdbg_run()`
 Resumes execution after a break — the engine runs until the next breakpoint

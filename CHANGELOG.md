@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `run_command` now watches the container command and returns as soon as it exits when no Xdebug connection arrives, reporting the command output and exit status (or that Xdebug is off) instead of waiting for the full timeout and losing the output. A short grace still honours an engine that connects just before the process exits (#58)
 - `xdbg --version` and the MCP `serverInfo.version` now fall back to the module build info when the `-ldflags` value is absent, so `go install github.com/crazy-goat/xdbg@vX.Y.Z` reports the tag instead of `dev`. Local builds and branch installs such as `@main` still report `dev`, and release binaries keep reporting the tag from `-ldflags` (#54)
 - `listen`, `request`, `request_from_files` and `run_command` now keep waiting when Xdebug connects just before the accept timeout and the DBGp handshake finishes after it, instead of reporting "no engine connected" and leaving an orphan paused session. The handshake has its own deadline, and a timeout drops the accepted connection so the next `listen` works (#27)
 - `xdbg` without the `mcp` subcommand accepts the same flags as `xdbg mcp` (#60)
