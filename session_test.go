@@ -1117,6 +1117,167 @@ func TestListenWaitFailedHandshake(t *testing.T) {
 	}
 }
 
+// freeAddr returns a currently free 127.0.0.1 address for the DBGp listener.
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen: %v", err)
+	}
+	addr := probe.Addr().String()
+	probe.Close()
+	return addr
+}
+
+// dialEngine waits for the debugger's listener at addr and returns a connection
+// to it, closing the connection at test cleanup.
+func dialEngine(t *testing.T, addr string) net.Conn {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		if c, err := net.Dial("tcp", addr); err == nil {
+			t.Cleanup(func() { _ = c.Close() })
+			return c
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("engine could not connect to %s", addr)
+	return nil
+}
+
+// slowEngine connects at once, waits delay (past the caller's accept timeout),
+// then completes the DBGp handshake, applying the given number of queued
+// breakpoints.
+func slowEngine(t *testing.T, addr string, delay time.Duration, breakpoints int) {
+	t.Helper()
+	conn := dialEngine(t, addr)
+	time.Sleep(delay)
+	eng := &fakeEngine{t: t, conn: conn}
+	eng.send(xmlProlog + `<init fileuri="file:///d/index.php"/>`)
+	responses := []string{
+		`<response command="feature_set" success="1"/>`,
+		`<response command="feature_set" success="1"/>`,
+		`<response command="feature_set" success="1"/>`,
+	}
+	for i := 0; i < breakpoints; i++ {
+		responses = append(responses, `<response command="breakpoint_set" id="7"/>`)
+	}
+	eng.respond(responses...)
+}
+
+// stuckEngine connects and never sends <init>, holding the connection open
+// until hold is closed.
+func stuckEngine(t *testing.T, addr string, hold <-chan struct{}) {
+	t.Helper()
+	_ = dialEngine(t, addr)
+	<-hold
+}
+
+// assertNoOrphan checks that a timeout error did not leave an active session,
+// and that a new listen is not rejected with "debug session already active".
+func assertNoOrphan(t *testing.T, s *session, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("want a timeout error, got nil")
+	}
+	if got := s.Status(); !strings.Contains(got, "state=no session") {
+		t.Fatalf("error %v left session %q; want no session", err, got)
+	}
+	if _, lerr := s.ListenWait(100 * time.Millisecond); lerr != nil && strings.Contains(lerr.Error(), "already active") {
+		t.Fatalf("next ListenWait = %v; want no 'already active' error", lerr)
+	}
+}
+
+func TestListenWaitSlowHandshakeAfterTimeout(t *testing.T) {
+	s := newSession("/l", "/d")
+	s.dbgAddr = freeAddr(t)
+	if _, err := s.SetBreakpoint("a.php", 3); err != nil {
+		t.Fatal(err)
+	}
+	// The engine connects at once but finishes the handshake after the caller's
+	// accept timeout. The caller must keep waiting for the handshake instead of
+	// reporting "no engine connected" and leaving an orphan paused session.
+	go slowEngine(t, s.dbgAddr, 500*time.Millisecond, 1)
+
+	out, err := s.ListenWait(300 * time.Millisecond)
+	if err != nil {
+		// Option B: the caller gave up; it must not leave a session behind.
+		assertNoOrphan(t, s, err)
+		return
+	}
+	// Option A: the handshake finished; the client knows about the session.
+	if !strings.Contains(out, "state=started") {
+		t.Fatalf("ListenWait = %q, want an adopted paused session", out)
+	}
+}
+
+func TestListenWaitStuckEngine(t *testing.T) {
+	oldTimeout, oldGrace := handshakeTimeout, handshakeGrace
+	handshakeTimeout, handshakeGrace = 200*time.Millisecond, 0
+	t.Cleanup(func() { handshakeTimeout, handshakeGrace = oldTimeout, oldGrace })
+
+	s := newSession("/l", "/d")
+	s.dbgAddr = freeAddr(t)
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	go stuckEngine(t, s.dbgAddr, hold)
+
+	start := time.Now()
+	_, err := s.ListenWait(300 * time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("ListenWait = nil error, want a handshake timeout")
+	}
+	if elapsed > 300*time.Millisecond+handshakeTimeout+2*time.Second {
+		t.Fatalf("ListenWait took %s; a stuck engine must not block forever", elapsed)
+	}
+	assertNoOrphan(t, s, err)
+}
+
+func TestRunCommandSlowHandshakeAfterTimeout(t *testing.T) {
+	s := newSession("/l", "/d")
+	s.dbgAddr = freeAddr(t)
+	s.containerExec = "true"
+	if _, err := s.SetBreakpoint("a.php", 3); err != nil {
+		t.Fatal(err)
+	}
+	go slowEngine(t, s.dbgAddr, 500*time.Millisecond, 1)
+
+	text, err := s.RunCommand("noop", 300*time.Millisecond)
+	if err != nil {
+		assertNoOrphan(t, s, err)
+		return
+	}
+	if !strings.Contains(text, "paused") || !strings.Contains(s.Status(), "state=started") {
+		t.Fatalf("RunCommand = %q, status %q; want an adopted paused session", text, s.Status())
+	}
+}
+
+func TestRunCommandStuckEngine(t *testing.T) {
+	oldTimeout, oldGrace := handshakeTimeout, handshakeGrace
+	handshakeTimeout, handshakeGrace = 200*time.Millisecond, 0
+	t.Cleanup(func() { handshakeTimeout, handshakeGrace = oldTimeout, oldGrace })
+
+	s := newSession("/l", "/d")
+	s.dbgAddr = freeAddr(t)
+	s.containerExec = "true"
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	go stuckEngine(t, s.dbgAddr, hold)
+
+	start := time.Now()
+	_, err := s.RunCommand("noop", 300*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("RunCommand = nil error, want a handshake timeout")
+	}
+	if elapsed > 300*time.Millisecond+handshakeTimeout+2*time.Second {
+		t.Fatalf("RunCommand took %s; a stuck engine must not block forever", elapsed)
+	}
+	assertNoOrphan(t, s, err)
+}
+
 func TestAdoptWellFormedInit(t *testing.T) {
 	eng, conn := newPipe(t)
 	s := newSession("/l", "/d")

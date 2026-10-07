@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `listen`, `request`, `request_from_files` and `run_command` now keep waiting when Xdebug connects just before the accept timeout and the DBGp handshake finishes after it, instead of reporting "no engine connected" and leaving an orphan paused session. The handshake has its own deadline, and a timeout drops the accepted connection so the next `listen` works (#27)
 - `xdbg` without the `mcp` subcommand accepts the same flags as `xdbg mcp` (#60)
 - Session status now clears the last paused source location when Xdebug resumes, stops, detaches, or disconnects (#36)
 - `summarize` now truncates long property values at 300 runes instead of 300 bytes and adds an ellipsis without splitting UTF-8 characters (#56)

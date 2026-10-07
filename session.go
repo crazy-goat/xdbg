@@ -20,6 +20,16 @@ import (
 
 const maxPacketLen = 64 << 20 // 64 MiB
 
+// handshakeTimeout bounds the DBGp handshake (the <init> packet plus the
+// feature/breakpoint round trips) after Xdebug has connected. It is a variable
+// so tests can shorten it.
+var handshakeTimeout = 10 * time.Second
+
+// handshakeGrace is added to the caller-side wait for a connected engine, so
+// adopt's own handshakeTimeout deadline always fires first and reports the
+// failure instead of the caller racing it.
+var handshakeGrace = 2 * time.Second
+
 type bp struct {
 	file string // container path
 	line int
@@ -40,6 +50,11 @@ type session struct {
 	nextQID  int           // never reset when breakpoints are removed or cleared
 	ready    chan struct{} // closed on each adopt; lets ListenWait/DoRequest await a connection
 	adoptErr error         // why the last adopt failed (nil on success); read by the waiters after ready closes
+
+	// acceptedConn is the freshly accepted engine connection between Accept and
+	// adopt taking it over. A caller timeout closes it so an adopt that has not
+	// started yet cannot leave an orphan session. Guarded by mu.
+	acceptedConn net.Conn
 
 	dbgAddr string       // "host:port" where Xdebug connects (e.g. "0.0.0.0:9003")
 	ln      net.Listener // non-nil only while the ephemeral listener is open
@@ -73,23 +88,34 @@ func newSession(localRoot, dockerRoot string) *session {
 // cleanly or times out, so browser/curl requests can never accidentally connect
 // to a debug session that is no longer active.
 //
+// It returns acceptResult, which receives the listener's Accept error: nil once
+// a connection was accepted (before the DBGp handshake starts), or a non-nil
+// error when the accept deadline expired or the listener was closed. Waiters
+// use it to tell "no engine connected" from "engine connected but the handshake
+// is still running".
+//
 // If the port is already in use, acquireListener waits up to portWait for it to
 // become free. This lets multiple MCP instances coexist — one debugs while the
 // other waits for its turn.
-func (s *session) openOnce(timeout, portWait time.Duration) error {
+func (s *session) openOnce(timeout, portWait time.Duration) (<-chan error, error) {
 	ln, err := s.acquireListener(portWait)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	s.mu.Lock()
 	s.ln = ln
 	s.mu.Unlock()
 	log.Printf("DBGp listener open %s (local=%s docker=%s)", s.dbgAddr, s.localRoot, s.dockerRoot)
 
+	acceptResult := make(chan error, 1)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("DBGp accept goroutine panic: %v", r)
+				select {
+				case acceptResult <- fmt.Errorf("DBGp accept goroutine panic: %v", r):
+				default:
+				}
 			}
 		}()
 		defer func() {
@@ -104,11 +130,18 @@ func (s *session) openOnce(timeout, portWait time.Duration) error {
 		ln.(*net.TCPListener).SetDeadline(time.Now().Add(timeout))
 		conn, err := ln.Accept()
 		if err != nil {
+			acceptResult <- err
 			return // timeout or closeLn() called
 		}
+		// Publish the accepted connection before waking the waiter, so a caller
+		// timeout can always drop it even if adopt has not started yet.
+		s.mu.Lock()
+		s.acceptedConn = conn
+		s.mu.Unlock()
+		acceptResult <- nil
 		s.adopt(conn)
 	}()
-	return nil
+	return acceptResult, nil
 }
 
 // acquireListener tries to open the DBGp port. If our own listener is already
@@ -199,6 +232,7 @@ func (s *session) closeLn() {
 func (s *session) adopt(conn net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.acceptedConn = nil
 	if s.conn != nil {
 		s.conn.Close()
 	}
@@ -207,6 +241,9 @@ func (s *session) adopt(conn net.Conn) {
 	s.tx = 0
 	s.file, s.line = "", 0
 	s.adoptErr = nil
+	// A stuck or half-connected engine must not hold s.mu forever: the deadline
+	// turns it into a read/write error, which failHandshakeLocked reports.
+	conn.SetDeadline(time.Now().Add(handshakeTimeout))
 
 	initXML, err := s.readPacket()
 	if err != nil {
@@ -249,6 +286,9 @@ func (s *session) adopt(conn net.Conn) {
 			s.rawLocked("stop", "") //nolint:errcheck // best-effort stop
 		}
 		s.dropLocked()
+	}
+	if s.conn != nil {
+		s.conn.SetDeadline(time.Time{})
 	}
 
 	s.signalReadyLocked()
@@ -686,6 +726,71 @@ func (s *session) runShell(cmd string) (string, error) {
 	return text, nil
 }
 
+// --- waiting for a connection ----------------------------------------------
+
+// waitForSession blocks until adopt finishes (ready) or the engine fails to
+// connect. acceptResult carries the listener's Accept error (nil once a
+// connection was accepted, before the handshake). interrupt, when non-nil,
+// carries a failure of the triggering request or command. On success it returns
+// nil; otherwise it returns the handshake error or a timeout error. It always
+// closes the listener before returning, so a later listen never sees a stale
+// listener, and it never leaves an orphan paused session behind.
+func (s *session) waitForSession(ready <-chan struct{}, acceptResult <-chan error, interrupt <-chan error, timeout time.Duration, noEngineFmt string) error {
+	err := s.awaitOutcome(ready, acceptResult, interrupt, timeout, noEngineFmt)
+	s.closeLn()
+	return err
+}
+
+func (s *session) awaitOutcome(ready <-chan struct{}, acceptResult <-chan error, interrupt <-chan error, timeout time.Duration, noEngineFmt string) error {
+	select {
+	case <-ready:
+		return s.handshakeError()
+	case err := <-acceptResult:
+		if err != nil {
+			return fmt.Errorf(noEngineFmt, timeout)
+		}
+		return s.awaitHandshake(ready)
+	case err := <-interrupt:
+		return s.requestErrorUnlessReady(ready, acceptResult, err)
+	}
+}
+
+// awaitHandshake waits for adopt to finish after Xdebug connected. adopt bounds
+// the handshake with handshakeTimeout, so this wait is bounded too; the grace
+// only covers scheduler delay. If adopt still has not finished, the accepted
+// connection is dropped so no orphan paused session remains.
+func (s *session) awaitHandshake(ready <-chan struct{}) error {
+	select {
+	case <-ready:
+		return s.handshakeError()
+	case <-time.After(handshakeTimeout + handshakeGrace):
+		s.dropOrphan(ready)
+		return fmt.Errorf("xdebug connected but the DBGp handshake did not finish within %s", handshakeTimeout)
+	}
+}
+
+// dropOrphan drops a connection adopt is still handshaking so a caller timeout
+// cannot leave a paused session the client does not know about. It keeps the
+// session when adopt finished in the meantime. The ready check runs under mu,
+// which adopt holds for the whole handshake, so adopt cannot finish between the
+// check and the drop.
+func (s *session) dropOrphan(ready <-chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-ready:
+		return
+	default:
+	}
+	if s.acceptedConn != nil {
+		s.acceptedConn.Close()
+		s.acceptedConn = nil
+	}
+	if s.conn != nil {
+		s.dropLocked()
+	}
+}
+
 // ListenWait opens the DBGp port, blocks until the next engine connection is
 // adopted, then closes the port. Use for CLI/Symfony commands launched separately.
 func (s *session) ListenWait(timeout time.Duration) (string, error) {
@@ -693,20 +798,14 @@ func (s *session) ListenWait(timeout time.Duration) (string, error) {
 	ready := s.ready
 	s.mu.Unlock()
 
-	if err := s.openOnce(timeout, 10*time.Second); err != nil {
+	acceptResult, err := s.openOnce(timeout, 10*time.Second)
+	if err != nil {
 		return "", err
 	}
-
-	select {
-	case <-ready:
-		if err := s.handshakeError(); err != nil {
-			return "", err
-		}
-		return s.Status(), nil
-	case <-time.After(timeout):
-		s.closeLn()
-		return "", fmt.Errorf("no engine connected within %s", timeout)
+	if err := s.waitForSession(ready, acceptResult, nil, timeout, "no engine connected within %s"); err != nil {
+		return "", err
 	}
+	return s.Status(), nil
 }
 
 // ListenFireForget opens the DBGp port and returns immediately — the listener
@@ -717,7 +816,7 @@ func (s *session) ListenWait(timeout time.Duration) (string, error) {
 func (s *session) ListenFireForget() (string, error) {
 	// We don't know the accept timeout here — use a long default (1h) so the
 	// listener stays open. It'll be closed when adopt() runs.
-	if err := s.openOnce(time.Hour, 10*time.Second); err != nil {
+	if _, err := s.openOnce(time.Hour, 10*time.Second); err != nil {
 		return "", err
 	}
 	return "listener armed (fire-and-forget); check status to see if a session was adopted", nil
@@ -744,7 +843,8 @@ func (s *session) RunCommand(command string, timeout time.Duration) (string, err
 	ready := s.ready
 	s.mu.Unlock()
 
-	if err := s.openOnce(timeout, 10*time.Second); err != nil {
+	acceptResult, err := s.openOnce(timeout, 10*time.Second)
+	if err != nil {
 		return "", err
 	}
 
@@ -767,32 +867,26 @@ func (s *session) RunCommand(command string, timeout time.Duration) (string, err
 		}
 	}()
 
-	select {
-	case <-ready:
-		if err := s.handshakeError(); err != nil {
-			return "", err
-		}
-		s.mu.Lock()
-		state := s.state
-		s.mu.Unlock()
-		if state == "stopping" || state == "no session" {
-			// Script ran to completion — collect command output.
-			select {
-			case r := <-resultCh:
-				if r.err != nil {
-					return r.out, fmt.Errorf("%s: %w", r.out, r.err)
-				}
-				if r.out != "" {
-					return r.out, nil
-				}
-				return "command completed", nil
-			case <-time.After(5 * time.Second):
-				return "script ran to completion (command output not captured in time)", nil
-			}
-		}
-		return "command fired; session paused at script start — call run/step to drive", nil
-	case <-time.After(timeout):
-		s.closeLn()
-		return "", fmt.Errorf("no Xdebug connection within %s — is Xdebug enabled in the container? (docker compose exec php set-xdebug-on)", timeout)
+	if err := s.waitForSession(ready, acceptResult, nil, timeout, "no Xdebug connection within %s — is Xdebug enabled in the container? (docker compose exec php set-xdebug-on)"); err != nil {
+		return "", err
 	}
+	s.mu.Lock()
+	state := s.state
+	s.mu.Unlock()
+	if state == "stopping" || state == "no session" {
+		// Script ran to completion — collect command output.
+		select {
+		case r := <-resultCh:
+			if r.err != nil {
+				return r.out, fmt.Errorf("%s: %w", r.out, r.err)
+			}
+			if r.out != "" {
+				return r.out, nil
+			}
+			return "command completed", nil
+		case <-time.After(5 * time.Second):
+			return "script ran to completion (command output not captured in time)", nil
+		}
+	}
+	return "command fired; session paused at script start — call run/step to drive", nil
 }

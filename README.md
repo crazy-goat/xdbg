@@ -315,7 +315,10 @@ command debugging: call `xdbg_listen` first, then launch the command
 separately (e.g. `docker compose exec -T php php bin/console app:cmd`). Once
 the tool returns, the session is paused at the script start with breakpoints
 applied — drive it with `xdbg_run` / `xdbg_step_*` / etc. If no engine
-connects within the timeout, returns an error.
+connects within the timeout, returns an error. Once Xdebug connects, the DBGp
+handshake has its own 10s deadline; if it does not finish, the connection is
+dropped and the session is left with no session, so a later `xdbg_listen`
+works instead of failing with "debug session already active".
 
 ### `xdbg_run_command(string command, int? timeoutMs)`
 `command` is required (e.g. `"bin/console app:my-command --option=value"`);

@@ -285,6 +285,56 @@ func TestDoRequest_ClientErrorFailsFast(t *testing.T) {
 	})
 }
 
+func TestDoAndWaitSlowHandshakeAfterTimeout(t *testing.T) {
+	s := newRequestTestSession(t)
+	if _, err := s.SetBreakpoint("/index.php", 3); err != nil {
+		t.Fatal(err)
+	}
+	// The engine connects at once but finishes the handshake after the accept
+	// timeout. The caller must keep waiting instead of reporting no connection.
+	go slowEngine(t, s.dbgAddr, 500*time.Millisecond, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	text, err := s.DoRequest(server.URL, "GET", nil, "", 300*time.Millisecond)
+	if err != nil {
+		assertNoOrphan(t, s, err)
+		return
+	}
+	if !strings.Contains(text, "paused") || !strings.Contains(s.Status(), "state=started") {
+		t.Fatalf("DoRequest = %q, status %q; want an adopted paused session", text, s.Status())
+	}
+}
+
+func TestDoAndWaitStuckEngine(t *testing.T) {
+	oldTimeout, oldGrace := handshakeTimeout, handshakeGrace
+	handshakeTimeout, handshakeGrace = 200*time.Millisecond, 0
+	t.Cleanup(func() { handshakeTimeout, handshakeGrace = oldTimeout, oldGrace })
+
+	s := newRequestTestSession(t)
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	go stuckEngine(t, s.dbgAddr, hold)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	start := time.Now()
+	_, err := s.DoRequest(server.URL, "GET", nil, "", 300*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("DoRequest = nil error, want a handshake timeout")
+	}
+	if elapsed > 300*time.Millisecond+handshakeTimeout+2*time.Second {
+		t.Fatalf("DoRequest took %s; a stuck engine must not block forever", elapsed)
+	}
+	assertNoOrphan(t, s, err)
+}
+
 func TestRequestErrorUnlessReady(t *testing.T) {
 	for _, isReady := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ready=%t", isReady), func(t *testing.T) {
@@ -302,7 +352,7 @@ func TestRequestErrorUnlessReady(t *testing.T) {
 			reqErr := make(chan error, 1)
 			reqErr <- io.EOF
 			// Both results exist before this error-selected path runs.
-			err = s.requestErrorUnlessReady(ready, <-reqErr)
+			err = s.requestErrorUnlessReady(ready, nil, <-reqErr)
 			if isReady {
 				if err != nil {
 					t.Fatalf("a ready DBGp result must win over the client error: %v", err)

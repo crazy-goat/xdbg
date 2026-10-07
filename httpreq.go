@@ -25,7 +25,8 @@ func (s *session) doAndWait(req *http.Request, timeout time.Duration) (string, e
 	// connection arrives at an open port. The port is closed once the session
 	// ends (adopt finishes), preventing stray browser requests from connecting.
 	// If the port is busy (another debugger), acquireListener waits up to 10s.
-	if err := s.openOnce(timeout, 10*time.Second); err != nil {
+	acceptResult, err := s.openOnce(timeout, 10*time.Second)
+	if err != nil {
 		return "", err
 	}
 
@@ -43,24 +44,18 @@ func (s *session) doAndWait(req *http.Request, timeout time.Duration) (string, e
 		log.Printf("request completed: %s %s -> %s", req.Method, req.URL, resp.Status)
 	}()
 
-	select {
-	case <-ready:
-	case err := <-reqErr:
-		if err := s.requestErrorUnlessReady(ready, err); err != nil {
-			return "", err
-		}
-	case <-time.After(timeout):
-		s.closeLn()
-		return "", fmt.Errorf("no Xdebug connection within %s — is Xdebug enabled in the container? (docker compose exec php set-xdebug-on)", timeout)
+	if err := s.waitForSession(ready, acceptResult, reqErr, timeout, "no Xdebug connection within %s — is Xdebug enabled in the container? (docker compose exec php set-xdebug-on)"); err != nil {
+		return "", err
+	}
+	// A client error may have raced a handshake failure on the interrupt path.
+	if err := s.handshakeError(); err != nil {
+		return "", err
 	}
 
 	// adopt() already auto-ran when there were no breakpoints; the session
 	// is done. Otherwise the engine is paused at the start of the script
 	// (state="started") with breakpoints applied — return without detaching
 	// so the caller can drive: run / step_* / eval / …
-	if err := s.handshakeError(); err != nil {
-		return "", err
-	}
 	s.mu.Lock()
 	state := s.state
 	s.mu.Unlock()
@@ -70,15 +65,22 @@ func (s *session) doAndWait(req *http.Request, timeout time.Duration) (string, e
 	return "request fired; session paused at script start — call run/step to drive", nil
 }
 
-// requestErrorUnlessReady preserves a completed DBGp result after a late client error.
-func (s *session) requestErrorUnlessReady(ready <-chan struct{}, err error) error {
+// requestErrorUnlessReady preserves a completed DBGp result after a late client
+// error. A closed ready means adopt already finished; an accepted connection
+// (acceptResult nil) means the handshake is still running and its result must
+// win over the client error.
+func (s *session) requestErrorUnlessReady(ready <-chan struct{}, acceptResult <-chan error, err error) error {
 	select {
 	case <-ready:
 		return nil
+	case aerr := <-acceptResult:
+		if aerr == nil {
+			return s.awaitHandshake(ready)
+		}
 	default:
-		s.closeLn()
-		return fmt.Errorf("request failed: %w", err)
 	}
+	s.closeLn()
+	return fmt.Errorf("request failed: %w", err)
 }
 
 // DoRequest fires an arbitrary HTTP request (method/headers/body) at the app,
