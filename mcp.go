@@ -158,7 +158,7 @@ func (m *mcpServer) handle(req rpcReq) *rpcResp {
 		resp.Result = map[string]any{
 			"protocolVersion": "2024-11-05",
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "xdbg", "version": version},
+			"serverInfo":      map[string]any{"name": "xdbg", "version": resolvedVersion()},
 		}
 	case "tools/list":
 		resp.Result = map[string]any{"tools": m.tools}

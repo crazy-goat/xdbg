@@ -200,8 +200,8 @@ func TestInitializeServerInfo(t *testing.T) {
 	if info["name"] != "xdbg" {
 		t.Fatalf("serverInfo.name = %v, want xdbg", info["name"])
 	}
-	if info["version"] != version {
-		t.Fatalf("serverInfo.version = %v, want the package version %q", info["version"], version)
+	if info["version"] != resolvedVersion() {
+		t.Fatalf("serverInfo.version = %v, want the resolved version %q", info["version"], resolvedVersion())
 	}
 
 	// The version is injected at build time (-ldflags -X main.version); the
