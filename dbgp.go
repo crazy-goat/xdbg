@@ -51,11 +51,13 @@ type xStk struct {
 }
 
 type xProp struct {
-	Name     string  `xml:"name,attr"`
-	Type     string  `xml:"type,attr"`
-	Encoding string  `xml:"encoding,attr"`
-	Value    string  `xml:",chardata"`
-	Children []xProp `xml:"property"`
+	Name        string  `xml:"name,attr"`
+	Type        string  `xml:"type,attr"`
+	Encoding    string  `xml:"encoding,attr"`
+	NumChildren int     `xml:"numchildren,attr"` // real number of children (all pages)
+	HasChildren string  `xml:"children,attr"`    // "1" or "0"; empty for scalars
+	Value       string  `xml:",chardata"`
+	Children    []xProp `xml:"property"`
 }
 
 type xBkpt struct {
@@ -92,8 +94,9 @@ func decodeVal(p xProp) string {
 
 // summarize renders a property as one readable line.
 func summarize(p xProp) string {
-	if len(p.Children) > 0 {
-		return p.Type + " {" + strconv.Itoa(len(p.Children)) + " children}"
+	if p.Type == "array" || p.Type == "object" || p.HasChildren == "1" || len(p.Children) > 0 {
+		n := max(p.NumChildren, len(p.Children)) // numchildren is missing in some engines
+		return p.Type + " {" + strconv.Itoa(n) + " children}"
 	}
 	v := decodeVal(p)
 	if r := []rune(v); len(r) > 300 {

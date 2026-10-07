@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `xdbg` without the `mcp` subcommand accepts the same flags as `xdbg mcp` (#60)
 - Session status now clears the last paused source location when Xdebug resumes, stops, detaches, or disconnects (#36)
 - `summarize` now truncates long property values at 300 runes instead of 300 bytes and adds an ellipsis without splitting UTF-8 characters (#56)
+- `context_get`, `property_get` and `eval` now report a property's real child count from `numchildren` instead of the size of the first received page, so a 300-element array shows `array {300 children}`; empty arrays and objects show `{0 children}` instead of an empty value (#35)
 - DBGp commands now quote and escape property names and encode file URIs. Breakpoints and property access support spaces, quotes, backslashes, and non-ASCII characters. Host locations decode file URIs, but plain paths retain literal percent sequences. Property names reject NUL bytes; breakpoint removal rejects non-numeric engine ids and retains local handles (#26)
 - `breakpoint_remove` now accepts stable local handles (`q1`, `q2`, ...) to remove queued breakpoints without a session. Queued replies and queued or rejected list entries show the handles. Empty ids return an error without a state change. Failed engine removal leaves the local queue unchanged; `breakpoint_clear` remains best-effort (#29)
 - `example/bin/set-xdebug-on` and `set-xdebug-off` now call the `xdebug-on` / `xdebug-off` scripts in the container and fail when the change fails (#59)
