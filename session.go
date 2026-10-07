@@ -41,6 +41,14 @@ type bp struct {
 	err  string // why the last apply failed
 }
 
+// acceptAttempt identifies one listener goroutine so a late Accept cannot be
+// adopted after its caller has already returned an error or started a new
+// request. Guarded by session.mu.
+type acceptAttempt struct {
+	cancelled bool
+	reported  bool
+}
+
 type session struct {
 	mu       sync.Mutex
 	conn     net.Conn
@@ -55,9 +63,10 @@ type session struct {
 	adoptErr error         // why the last adopt failed (nil on success); read by the waiters after ready closes
 
 	// acceptedConn is the freshly accepted engine connection between Accept and
-	// adopt taking it over. A caller timeout closes it so an adopt that has not
-	// started yet cannot leave an orphan session. Guarded by mu.
-	acceptedConn net.Conn
+	// adopt taking it over. A caller cancellation closes it so a late adopt
+	// cannot leave an orphan session. Guarded by mu.
+	acceptedConn  net.Conn
+	acceptAttempt *acceptAttempt
 
 	dbgAddr string       // "host:port" where Xdebug connects (e.g. "0.0.0.0:9003")
 	ln      net.Listener // non-nil only while the ephemeral listener is open
@@ -107,8 +116,10 @@ func (s *session) openOnce(timeout, portWait time.Duration) (<-chan error, error
 	if err != nil {
 		return nil, err
 	}
+	attempt := &acceptAttempt{}
 	s.mu.Lock()
 	s.ln = ln
+	s.acceptAttempt = attempt
 	s.mu.Unlock()
 	log.Printf("DBGp listener open %s (local=%s docker=%s)", s.dbgAddr, s.localRoot, s.dockerRoot)
 
@@ -129,6 +140,9 @@ func (s *session) openOnce(timeout, portWait time.Duration) (<-chan error, error
 			if s.ln == ln {
 				s.ln = nil
 			}
+			if s.acceptAttempt == attempt {
+				s.acceptAttempt = nil
+			}
 			s.mu.Unlock()
 			log.Printf("DBGp listener closed")
 		}()
@@ -138,23 +152,30 @@ func (s *session) openOnce(timeout, portWait time.Duration) (<-chan error, error
 			acceptResult <- err
 			return // timeout or closeLn() called
 		}
-		// Publish the accepted connection before waking the waiter, so a caller
-		// timeout can always drop it even if adopt has not started yet.
-		s.mu.Lock()
-		s.acceptedConn = conn
-		s.mu.Unlock()
-		acceptResult <- nil
-		// Close the listener before adopt() runs: adopt can execute the script
-		// to completion (no breakpoints), and without this a second Xdebug
-		// connection would complete the TCP handshake in the kernel backlog and
-		// block until the deferred close, delaying an unrelated PHP request by
-		// the whole runtime of the first script. A second connect now gets
-		// "connection refused" and Xdebug continues at once. s.ln stays set until
-		// adopt returns, so acquireListener keeps refusing a new listen.
-		ln.Close()
-		s.adopt(conn)
+		// Publish the connection and accept result atomically against cancellation,
+		// then close the listener before adopt() runs the script.
+		s.acceptConnection(attempt, conn, ln, acceptResult)
 	}()
 	return acceptResult, nil
+}
+
+// acceptConnection publishes a connection returned by Accept, reports the
+// successful accept, and adopts it unless its caller cancelled in between.
+func (s *session) acceptConnection(attempt *acceptAttempt, conn net.Conn, ln net.Listener, acceptResult chan<- error) {
+	s.mu.Lock()
+	if attempt.cancelled || s.acceptAttempt != attempt {
+		conn.Close() //nolint:errcheck // best-effort cleanup of a late connection
+		s.mu.Unlock()
+		return
+	}
+	s.acceptedConn = conn
+	attempt.reported = true
+	// This channel is buffered, so publishing the connection and making the
+	// successful accept observable remain one atomic step under mu.
+	acceptResult <- nil
+	s.mu.Unlock()
+	ln.Close() //nolint:errcheck // listener is also closed by the deferred cleanup
+	s.adoptAccepted(attempt, conn)
 }
 
 // acquireListener tries to open the DBGp port. If our own listener is already
@@ -240,11 +261,63 @@ func (s *session) closeLn() {
 	s.mu.Unlock()
 }
 
+// cancelPendingAccept closes the listener and any accepted connection when a
+// client error wins before Accept has been reported. The attempt flag also
+// covers the gap between Accept returning and acceptConnection acquiring mu.
+// cancelPendingAccept returns true when a connection was already reported or
+// the session became ready. In that case the caller must preserve the handshake
+// result instead of replacing it with the client error.
+func (s *session) cancelPendingAccept(ready <-chan struct{}) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-ready:
+		return true
+	default:
+	}
+	if s.acceptAttempt != nil && s.acceptAttempt.reported {
+		return true
+	}
+	if s.acceptAttempt != nil {
+		s.acceptAttempt.cancelled = true
+	}
+	if s.acceptedConn != nil {
+		s.acceptedConn.Close() //nolint:errcheck // best-effort cancellation cleanup
+		s.acceptedConn = nil
+	}
+	if s.ln != nil {
+		s.ln.Close() //nolint:errcheck // best-effort cancellation cleanup
+		s.ln = nil
+	}
+	return false
+}
+
 // adopt takes over a freshly accepted engine connection: reads <init>, sets
 // features, applies pending breakpoints, and wakes any ListenWait/DoRequest.
 func (s *session) adopt(conn net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.adoptLocked(conn)
+}
+
+// adoptAccepted adopts conn only while the attempt that accepted it remains
+// active. Checking under mu makes cancellation and the start of adoption
+// mutually exclusive.
+func (s *session) adoptAccepted(attempt *acceptAttempt, conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if attempt.cancelled || s.acceptAttempt != attempt {
+		if s.acceptedConn == conn {
+			s.acceptedConn = nil
+		}
+		conn.Close() //nolint:errcheck // best-effort cleanup of a late connection
+		return
+	}
+	s.adoptLocked(conn)
+}
+
+// adoptLocked takes over conn while s.mu is already held.
+func (s *session) adoptLocked(conn net.Conn) {
 	s.acceptedConn = nil
 	if s.conn != nil {
 		s.conn.Close()
