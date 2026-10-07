@@ -48,7 +48,8 @@ plus CLI/Symfony command debugging and host↔container path translation.
    tool calls. Your agent sets a breakpoint, fires the request, inspects
    variables, steps — all in one conversation.
 4. The DBGp port is **ephemeral** — bound only during a tool call and released
-   immediately after. Between calls, port 9003 is free for PhpStorm, browser
+   as soon as Xdebug connects, so the port is free again while the session is
+   still being driven. Between calls, port 9003 is free for PhpStorm, browser
    Xdebug, or any other debugger.
 
 DBGp packets have a maximum payload length of 64 MiB and must end with NUL.
@@ -327,8 +328,10 @@ with `--container-exec`) and waits for the resulting Xdebug connection. When
 no breakpoints are set, the script runs to completion and the command output
 is returned. When breakpoints are set, the session pauses at the first break
 and the caller drives it with `xdbg_run` / `xdbg_step_*` — the command output
-is not available until the script finishes. This is the CLI equivalent of
-`xdbg_request`.
+is not available until the script finishes. If the command exits before Xdebug
+connects (a bad service, a typo, or Xdebug off in the container), it returns
+promptly with the command output and exit status instead of waiting for
+`timeoutMs`. This is the CLI equivalent of `xdbg_request`.
 
 ### `xdbg_run()`
 Resumes execution after a break — the engine runs until the next breakpoint

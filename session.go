@@ -34,6 +34,17 @@ var handshakeTimeout = 10 * time.Second
 // failure instead of the caller racing it.
 var handshakeGrace = 2 * time.Second
 
+// commandExitGrace is how long RunCommand keeps watching for a DBGp connection
+// after the container command exits. It honours an engine that connects just
+// before the process exits without waiting for the full timeout.
+const commandExitGrace = 500 * time.Millisecond
+
+// commandResult is the outcome of the container command started by RunCommand.
+type commandResult struct {
+	out string
+	err error
+}
+
 type bp struct {
 	file string // container path
 	line int
@@ -114,10 +125,12 @@ func newSession(localRoot, dockerRoot string) *session {
 	}
 }
 
-// openOnce opens the DBGp port, accepts exactly one Xdebug connection, calls
-// adopt(), then closes the port. The port is closed whether the session ends
-// cleanly or times out, so browser/curl requests can never accidentally connect
-// to a debug session that is no longer active.
+// openOnce opens the DBGp port and accepts exactly one Xdebug connection. As
+// soon as the first connection is accepted, the port is closed, so a second
+// Xdebug connection is refused at once instead of hanging in the listen backlog
+// while adopt() runs. It then calls adopt() to drive the session. The deferred
+// close covers the timeout/closeLn cases too, so browser/curl requests can
+// never accidentally connect to a debug session that is no longer active.
 //
 // It returns acceptResult, which receives the listener's Accept error: nil once
 // a connection was accepted (before the DBGp handshake starts), or a non-nil
@@ -170,6 +183,14 @@ func (s *session) openOnce(timeout, portWait time.Duration) (<-chan error, error
 		s.acceptedConn = conn
 		s.mu.Unlock()
 		acceptResult <- nil
+		// Close the listener before adopt() runs: adopt can execute the script
+		// to completion (no breakpoints), and without this a second Xdebug
+		// connection would complete the TCP handshake in the kernel backlog and
+		// block until the deferred close, delaying an unrelated PHP request by
+		// the whole runtime of the first script. A second connect now gets
+		// "connection refused" and Xdebug continues at once. s.ln stays set until
+		// adopt returns, so acquireListener keeps refusing a new listen.
+		ln.Close()
 		s.adopt(conn)
 	}()
 	return acceptResult, nil
@@ -188,18 +209,24 @@ func (s *session) acquireListener(portWait time.Duration) (net.Listener, error) 
 	s.mu.Unlock()
 
 	deadline := time.Now().Add(portWait)
+	// A port of 0 asks the OS to pick a free port, so it can never conflict with
+	// another process. Skip the lsof probe then: it is pointless and slow.
+	_, port, portErr := net.SplitHostPort(s.dbgAddr)
+	probe := portErr != nil || port != "0"
 	for {
 		// On macOS Go sets SO_REUSEADDR, so net.Listen succeeds even when
 		// another process is already listening on the same port — we'd open a
 		// "ghost" listener that never receives connections. Probe with lsof
 		// first so we detect the conflict and wait for the port to actually be
 		// free.
-		if holder := portHolder(s.dbgAddr); holder != "" {
-			if time.Now().After(deadline) {
-				return nil, fmt.Errorf("xdebug port %s is busy (held by: %s) — another debugger is using it; wait for it to finish or stop that session", s.dbgAddr, holder)
+		if probe {
+			if holder := portHolder(s.dbgAddr); holder != "" {
+				if time.Now().After(deadline) {
+					return nil, fmt.Errorf("xdebug port %s is busy (held by: %s) — another debugger is using it; wait for it to finish or stop that session", s.dbgAddr, holder)
+				}
+				time.Sleep(200 * time.Millisecond)
+				continue
 			}
-			time.Sleep(200 * time.Millisecond)
-			continue
 		}
 		ln, err := net.Listen("tcp", s.dbgAddr)
 		if err == nil {
@@ -1107,6 +1134,134 @@ func (s *session) awaitOutcome(ready <-chan struct{}, acceptResult <-chan error,
 	}
 }
 
+// waitForCommand waits for a debug session like waitForSession but also watches
+// the container command. When the command exits before Xdebug connects, it
+// returns promptly with the command output and exit status instead of waiting
+// for the whole timeout, and it always closes the listener before returning.
+func (s *session) waitForCommand(ready <-chan struct{}, acceptResult <-chan error, resultCh <-chan commandResult, timeout time.Duration, noEngineFmt string) error {
+	err := s.awaitCommand(ready, acceptResult, resultCh, timeout, noEngineFmt)
+	s.closeLn()
+	return err
+}
+
+func (s *session) awaitCommand(ready <-chan struct{}, acceptResult <-chan error, resultCh <-chan commandResult, timeout time.Duration, noEngineFmt string) error {
+	select {
+	case <-ready:
+		return s.handshakeError()
+	case err := <-acceptResult:
+		if err != nil {
+			return fmt.Errorf(noEngineFmt, timeout)
+		}
+		return s.awaitHandshake(ready)
+	case res := <-resultCh:
+		return s.awaitCommandExit(ready, acceptResult, res)
+	}
+}
+
+// awaitCommandExit is called when the container command exits before an engine
+// connected. It grants commandExitGrace for an engine that connected just before
+// the exit, then reports the command's own outcome: a command failure with its
+// output and exit status, or a success without Xdebug with the output.
+func (s *session) awaitCommandExit(ready <-chan struct{}, acceptResult <-chan error, res commandResult) error {
+	select {
+	case <-ready:
+		return s.handshakeError()
+	case err := <-acceptResult:
+		if err == nil {
+			return s.awaitHandshake(ready)
+		}
+		// Accept failed (deadline or listener close): no engine connected.
+		return commandOutcomeError(res)
+	case <-time.After(commandExitGrace):
+	}
+	// The grace expired, but a connection accepted right at the boundary may
+	// still be adopted after this returns — the orphan-session failure #27
+	// fixed for the other paths. Settle the accept goroutine first so no path
+	// reports the command error while a live session remains.
+	connected, err := s.settleAccepted(ready, acceptResult)
+	if err != nil {
+		return err
+	}
+	if connected {
+		// A session was adopted: let RunCommand's existing post-wait state
+		// handling collect the command output or report the paused session.
+		return nil
+	}
+	return commandOutcomeError(res)
+}
+
+// settleAccepted closes the listener and waits for the accept goroutine to
+// report its final verdict, so a connection accepted at the commandExitGrace
+// boundary cannot be adopted after the caller has given up. It reports whether
+// a session was established: connected is true when adopt succeeded (a live or
+// already-completed session the caller must report instead of the command
+// error), err is the handshake error when adopt failed, and both false/nil mean
+// no engine connected.
+func (s *session) settleAccepted(ready <-chan struct{}, acceptResult <-chan error) (connected bool, err error) {
+	// Close the listener if no handshake is in progress, so a pending Accept
+	// reports instead of returning a connection after we have decided. Do not
+	// block on s.mu: adopt may hold it for the whole handshake, and a stuck
+	// boundary engine must not delay the result. When adopt holds s.mu a
+	// connection was already accepted, so acceptResult reports it below.
+	s.closeLnIfIdle()
+	select {
+	case <-ready:
+		return s.adoptedSession()
+	case err := <-acceptResult:
+		if err == nil {
+			if herr := s.awaitHandshake(ready); herr != nil {
+				return false, herr
+			}
+			return true, nil
+		}
+		return false, nil
+	case <-time.After(commandExitGrace):
+		// The accept goroutine did not report in time; drop anything it
+		// accepted, then keep a session that finished adopting meanwhile.
+		s.dropOrphan(ready)
+		select {
+		case <-ready:
+			return s.adoptedSession()
+		default:
+		}
+		return false, nil
+	}
+}
+
+// closeLnIfIdle closes the active listener when no handshake is in progress,
+// without blocking on s.mu. It is a best-effort close: when adopt holds s.mu a
+// connection was already accepted and there is nothing to unblock.
+func (s *session) closeLnIfIdle() {
+	if !s.mu.TryLock() {
+		return
+	}
+	defer s.mu.Unlock()
+	if s.ln != nil {
+		s.ln.Close()
+		s.ln = nil
+	}
+}
+
+// adoptedSession reports the outcome of an adopt that has finished (ready
+// closed). connected is true when the handshake succeeded — a session was
+// established, even if a breakpoint-less script already ran to completion —
+// and err is the handshake error when it failed.
+func (s *session) adoptedSession() (connected bool, err error) {
+	if herr := s.handshakeError(); herr != nil {
+		return false, herr
+	}
+	return true, nil
+}
+
+// commandOutcomeError turns the command's own result into the error RunCommand
+// returns when no Xdebug connection arrived.
+func commandOutcomeError(res commandResult) error {
+	if res.err != nil {
+		return fmt.Errorf("command exited before Xdebug connected: %s: %w", res.out, res.err)
+	}
+	return fmt.Errorf("command finished without an Xdebug connection — is Xdebug enabled in the container? output: %s", res.out)
+}
+
 // awaitHandshake waits for adopt to finish after Xdebug connected. adopt bounds
 // the handshake with handshakeTimeout, so this wait is bounded too; the grace
 // only covers scheduler delay. If adopt still has not finished, the accepted
@@ -1200,18 +1355,14 @@ func (s *session) RunCommand(command string, timeout time.Duration) (string, err
 		return "", err
 	}
 
-	type cmdResult struct {
-		out string
-		err error
-	}
-	resultCh := make(chan cmdResult, 1)
+	resultCh := make(chan commandResult, 1)
 
 	go func() {
 		fullCmd := s.containerExec + " " + command
 		c := exec.Command("sh", "-c", fullCmd)
 		c.Dir = s.projectDir
 		out, err := c.CombinedOutput()
-		resultCh <- cmdResult{strings.TrimSpace(string(out)), err}
+		resultCh <- commandResult{strings.TrimSpace(string(out)), err}
 		if err != nil {
 			log.Printf("command error: %v", err)
 		} else {
@@ -1219,7 +1370,7 @@ func (s *session) RunCommand(command string, timeout time.Duration) (string, err
 		}
 	}()
 
-	if err := s.waitForSession(ready, acceptResult, nil, timeout, "no Xdebug connection within %s — is Xdebug enabled in the container? (docker compose exec php set-xdebug-on)"); err != nil {
+	if err := s.waitForCommand(ready, acceptResult, resultCh, timeout, "no Xdebug connection within %s — is Xdebug enabled in the container? (docker compose exec php set-xdebug-on)"); err != nil {
 		return "", err
 	}
 	s.mu.Lock()

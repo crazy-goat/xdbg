@@ -1315,6 +1315,76 @@ func TestListenWaitFailedHandshake(t *testing.T) {
 	}
 }
 
+// TestOpenOnceClosesListenerAfterFirstAccept verifies that openOnce closes the
+// DBGp port as soon as the first Xdebug connection is accepted, so a second
+// connection is refused at once instead of hanging in the listen backlog while
+// adopt() runs the script to completion (no breakpoints).
+func TestOpenOnceClosesListenerAfterFirstAccept(t *testing.T) {
+	s := newSession("/l", "/d")
+	s.dbgAddr = "127.0.0.1:0"
+	if _, err := s.openOnce(5*time.Second, 0); err != nil {
+		t.Fatalf("openOnce = %v, want nil", err)
+	}
+
+	// adopt replaces s.ready when it finishes, so save the current channel now.
+	s.mu.Lock()
+	addr := s.ln.Addr().String()
+	ready := s.ready
+	s.mu.Unlock()
+
+	// Client 1: complete the DBGp handshake up to the run command.
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("engine dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	r := bufio.NewReader(conn)
+	eng := &fakeEngine{t: t, conn: conn}
+
+	eng.send(xmlProlog + `<init fileuri="file:///d/index.php"/>`)
+	for i := 0; i < 3; i++ {
+		line, err := r.ReadString(0)
+		if err != nil {
+			t.Fatalf("read feature_set: %v", err)
+		}
+		eng.send(xmlProlog + withTx(`<response command="feature_set" success="1"/>`, txOf(line)))
+	}
+	asyncLine, err := r.ReadString(0)
+	if err != nil || !strings.HasPrefix(asyncLine, "feature_get -i ") {
+		t.Fatalf("feature_get command = %q, %v; want a feature_get command", asyncLine, err)
+	}
+	eng.send(xmlProlog + withTx(featureAsyncResponse, txOf(asyncLine)))
+	runLine, err := r.ReadString(0)
+	if err != nil || !strings.HasPrefix(runLine, "run -i ") {
+		t.Fatalf("run command = %q, %v; want a run command", runLine, err)
+	}
+
+	// Client 2: the listener must be closed after the first accept, so this is
+	// refused instead of completing the handshake in the kernel backlog.
+	if c2, err := net.DialTimeout("tcp", addr, 500*time.Millisecond); err == nil {
+		_ = c2.Close()
+		t.Fatal("a second connection succeeded; the listener must be closed after the first accept")
+	}
+
+	// Finish the first session: run -> stopping, then stop -> stopped.
+	eng.send(xmlProlog + withTx(`<response command="run" status="stopping"/>`, txOf(runLine)))
+	stopLine, err := r.ReadString(0)
+	if err != nil || !strings.HasPrefix(stopLine, "stop -i ") {
+		t.Fatalf("stop command = %q, %v; want a stop command", stopLine, err)
+	}
+	eng.send(xmlProlog + withTx(`<response command="stop" status="stopped"/>`, txOf(stopLine)))
+
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("adopt did not finish within 2s")
+	}
+	if s.state != "no session" {
+		t.Fatalf("state = %q, want %q", s.state, "no session")
+	}
+}
+
 // freeAddr returns a currently free 127.0.0.1 address for the DBGp listener.
 func freeAddr(t *testing.T) string {
 	t.Helper()
