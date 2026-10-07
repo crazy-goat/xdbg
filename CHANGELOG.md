@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `xdbg` without the `mcp` subcommand accepts the same flags as `xdbg mcp` (#60)
 - Session status now clears the last paused source location when Xdebug resumes, stops, detaches, or disconnects (#36)
 - `summarize` now truncates long property values at 300 runes instead of 300 bytes and adds an ellipsis without splitting UTF-8 characters (#56)
 - DBGp commands now quote and escape property names and encode file URIs. Breakpoints and property access support spaces, quotes, backslashes, and non-ASCII characters. Host locations decode file URIs, but plain paths retain literal percent sequences. Property names reject NUL bytes; breakpoint removal rejects non-numeric engine ids and retains local handles (#26)

@@ -5,7 +5,7 @@
 // CLI/command debugging). Spawned by an MCP client (e.g. Claude Code) via
 // .mcp.json.
 //
-//	xdbg --dbg-port 9003 --local-root /Users/.../app --docker-root /var/www/app
+//	xdbg mcp --dbg-port 9003 --local-root /Users/.../app --docker-root /var/www/app
 package main
 
 import (
@@ -31,7 +31,12 @@ func getwdDefault() string {
 func main() {
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Ltime)
+	if err := newRootCmd().Execute(); err != nil {
+		os.Exit(1)
+	}
+}
 
+func newRootCmd() *cobra.Command {
 	var (
 		dbgPort          string
 		localRoot        string
@@ -59,15 +64,6 @@ func main() {
 		},
 	}
 
-	f := mcpCmd.Flags()
-	f.StringVar(&dbgPort, "dbg-port", "9003", "DBGp listen port (where container Xdebug connects)")
-	f.StringVar(&localRoot, "local-root", getwdDefault(), "host project root (defaults to CWD)")
-	f.StringVar(&dockerRoot, "docker-root", "", "container project root (default empty: no path translation; relative paths use local-root)")
-	f.StringVar(&xdebugEnableCmd, "xdebug-enable-cmd", "", `shell command to enable Xdebug in the container, e.g. "docker compose exec -T php set-xdebug-on"`)
-	f.StringVar(&xdebugDisableCmd, "xdebug-disable-cmd", "", `shell command to disable Xdebug in the container`)
-	f.StringVar(&xdebugStatusCmd, "xdebug-status-cmd", "", `shell command to check Xdebug status in the container`)
-	f.StringVar(&containerExec, "container-exec", "docker compose exec -T php", "prefix for running commands in the container")
-
 	root := &cobra.Command{
 		Use:   "xdbg",
 		Short: "Docker-aware Xdebug (DBGp) debugger — MCP server",
@@ -79,7 +75,14 @@ func main() {
 	}
 	root.AddCommand(mcpCmd)
 
-	if err := root.Execute(); err != nil {
-		os.Exit(1)
-	}
+	f := root.PersistentFlags()
+	f.StringVar(&dbgPort, "dbg-port", "9003", "DBGp listen port (where container Xdebug connects)")
+	f.StringVar(&localRoot, "local-root", getwdDefault(), "host project root (defaults to CWD)")
+	f.StringVar(&dockerRoot, "docker-root", "", "container project root (default empty: no path translation; relative paths use local-root)")
+	f.StringVar(&xdebugEnableCmd, "xdebug-enable-cmd", "", `shell command to enable Xdebug in the container, e.g. "docker compose exec -T php set-xdebug-on"`)
+	f.StringVar(&xdebugDisableCmd, "xdebug-disable-cmd", "", `shell command to disable Xdebug in the container`)
+	f.StringVar(&xdebugStatusCmd, "xdebug-status-cmd", "", `shell command to check Xdebug status in the container`)
+	f.StringVar(&containerExec, "container-exec", "docker compose exec -T php", "prefix for running commands in the container")
+
+	return root
 }
