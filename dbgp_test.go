@@ -213,9 +213,56 @@ func TestDecodeValInvalidBase64FallsBack(t *testing.T) {
 // --- one-line rendering (summarize) -----------------------------------------
 
 func TestSummarizeChildren(t *testing.T) {
-	p := xProp{Type: "array", Children: []xProp{{}, {}, {}}}
-	if got := summarize(p); got != "array {3 children}" {
-		t.Fatalf("summarize = %q", got)
+	for _, tc := range []struct{ name, xml, want string }{
+		{
+			"real numchildren exceeds the received page",
+			`<property name="$arr" type="array" children="1" numchildren="300" page="0" pagesize="100">` +
+				`<property name="0" type="int"><![CDATA[1]]></property>` +
+				`<property name="1" type="int"><![CDATA[2]]></property>` +
+				`</property>`,
+			"array {300 children}",
+		},
+		{
+			"empty array",
+			`<property name="$arr" type="array" children="0" numchildren="0"></property>`,
+			"array {0 children}",
+		},
+		{
+			"object at the depth limit without child elements",
+			`<property name="$obj" type="object" children="1" numchildren="5"></property>`,
+			"object {5 children}",
+		},
+		{
+			"array without numchildren falls back to the received count",
+			`<property name="$arr" type="array">` +
+				`<property name="0" type="int"><![CDATA[1]]></property>` +
+				`<property name="1" type="int"><![CDATA[2]]></property>` +
+				`</property>`,
+			"array {2 children}",
+		},
+		{
+			"scalar int",
+			`<property name="$i" type="int"><![CDATA[7]]></property>`,
+			"7",
+		},
+		{
+			"base64 string",
+			`<property name="$s" type="string" encoding="base64"><![CDATA[aGk=]]></property>`,
+			"hi",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var r xResp
+			if err := unmarshal(xmlProlog+`<response command="context_get" status="break">`+tc.xml+`</response>`, &r); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(r.Props) != 1 {
+				t.Fatalf("props = %+v, want exactly one", r.Props)
+			}
+			if got := summarize(r.Props[0]); got != tc.want {
+				t.Fatalf("summarize = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
