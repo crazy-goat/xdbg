@@ -11,14 +11,53 @@ package main
 import (
 	"log"
 	"os"
+	"regexp"
+	"runtime/debug"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 // version is the release version reported by `xdbg --version` and the MCP
-// serverInfo. It is injected at build time with
-// -ldflags "-X main.version=..."; local builds keep the "dev" default.
+// serverInfo. Release binaries inject it at build time with
+// -ldflags "-X main.version=..."; any other build keeps the "dev" default.
 var version = "dev"
+
+// pseudoVersionRE matches a Go pseudo-version, e.g.
+// v0.0.0-20260101120000-abcdef123456 or v1.2.4-0.20260101120000-abcdef123456.
+// The 14-digit timestamp follows a '.' or '-' and precedes the commit hash.
+// A pseudo-version is a commit, not a release, so xdbg reports "dev" for it.
+var pseudoVersionRE = regexp.MustCompile(`[.-][0-9]{14}-[0-9a-f]+`)
+
+// resolvedVersion is the version to report: the -ldflags value when set,
+// otherwise the module build info (which `go install module@vX.Y.Z` fills with
+// the tag), otherwise "dev". It reads the ldflags target on every call, so it
+// stays correct if the variable is set after start (tests) or by the linker.
+func resolvedVersion() string {
+	bi, _ := debug.ReadBuildInfo()
+	return resolveVersion(version, bi)
+}
+
+// resolveVersion picks the version to report. The -ldflags value wins when it
+// is set to something other than the "dev" default. Otherwise it falls back to
+// the main module build info, but only for a real release: an empty version,
+// "(devel)" (local builds) and pseudo-versions (branch installs such as
+// `go install ...@main`) all report "dev". A nil build info also reports "dev".
+// Module versions carry a "v" prefix (`v1.2.3`) while release binaries inject
+// the bare tag (`1.2.3`), so the prefix is stripped to report one string.
+func resolveVersion(ldflags string, bi *debug.BuildInfo) string {
+	if ldflags != "" && ldflags != "dev" {
+		return ldflags
+	}
+	if bi == nil {
+		return "dev"
+	}
+	v := bi.Main.Version
+	if v == "" || v == "(devel)" || pseudoVersionRE.MatchString(v) {
+		return "dev"
+	}
+	return strings.TrimPrefix(v, "v")
+}
 
 func getwdDefault() string {
 	d, err := os.Getwd()
@@ -71,7 +110,7 @@ func newRootCmd() *cobra.Command {
 			return mcpCmd.RunE(mcpCmd, args)
 		},
 		SilenceUsage: true,
-		Version:      version,
+		Version:      resolvedVersion(),
 	}
 	root.AddCommand(mcpCmd)
 

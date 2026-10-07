@@ -58,6 +58,10 @@ The binary is placed in `$(go env GOPATH)/bin` (default `~/go/bin`). Add it to y
 export PATH="$(go env GOPATH)/bin:$PATH"
 ```
 
+Installing a tagged release (`@vX.Y.Z`) reports that version from
+`xdbg --version` and the MCP `serverInfo.version`. Installing a branch such as
+`@main` reports `dev`, because it is a commit and not a release.
+
 Add the line above to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) for persistence.
 
 Verify the installation:
