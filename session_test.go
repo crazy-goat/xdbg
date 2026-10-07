@@ -18,6 +18,10 @@ func dbgpPacket(xml string) string { return fmt.Sprintf("%d\x00%s\x00", len(xml)
 
 const xmlProlog = `<?xml version="1.0" encoding="iso-8859-1"?>`
 
+// featureAsyncResponse answers adopt's `feature_get -n supports_async` with an
+// engine that supports interrupting a running script.
+const featureAsyncResponse = `<response command="feature_get"><property name="supports_async" type="int" encoding="none">1</property></response>`
+
 // fakeEngine is the Xdebug side of an in-memory connection.
 type fakeEngine struct {
 	t    *testing.T
@@ -47,6 +51,7 @@ func newActivePipe(t *testing.T) (*session, *fakeEngine) {
 	s.r = bufio.NewReader(conn)
 	s.state = "started"
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	s.startReader(conn, s.r)
 	return s, eng
 }
 
@@ -100,14 +105,22 @@ func (e *fakeEngine) respondTo(command, response string) {
 // command without the "-i <tx>" part, for example `property_get -d 0 -n "$a"`,
 // and the transaction id, for the reply.
 func (e *fakeEngine) readCmd() (cmd, tx string) {
-	e.t.Helper()
+	cmd, tx, err := e.readCmdErr()
+	if err != nil && !isConnClosed(err) {
+		e.t.Errorf("engine read: %v", err)
+	}
+	return cmd, tx
+}
+
+// readCmdErr is readCmd without the t.Errorf, so callers (and goroutines that
+// may outlive the test) can inspect the error themselves.
+func (e *fakeEngine) readCmdErr() (cmd, tx string, err error) {
 	_ = e.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	var b []byte
 	one := make([]byte, 1)
 	for {
-		if _, err := e.conn.Read(one); err != nil {
-			e.t.Errorf("engine read: %v", err)
-			return "", ""
+		if _, err = e.conn.Read(one); err != nil {
+			return "", "", err
 		}
 		if one[0] == 0 {
 			break
@@ -116,14 +129,20 @@ func (e *fakeEngine) readCmd() (cmd, tx string) {
 	}
 	parts := strings.SplitN(string(b), " ", 4) // name, "-i", tx, rest
 	if len(parts) < 3 || parts[1] != "-i" {
-		e.t.Errorf("engine got a command without -i: %q", b)
-		return string(b), ""
+		return string(b), "", fmt.Errorf("engine got a command without -i: %q", b)
 	}
 	cmd = parts[0]
 	if len(parts) == 4 {
 		cmd += " " + parts[3]
 	}
-	return cmd, parts[2]
+	return cmd, parts[2], nil
+}
+
+// isConnClosed reports whether err is the expected result of the test (or the
+// debugger) closing the engine connection, so a read helper must not call
+// t.Errorf after the test has completed (which panics the whole binary).
+func isConnClosed(err error) bool {
+	return errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed)
 }
 
 // drain reads and discards the commands the debugger sends.
@@ -224,8 +243,9 @@ func TestRawLockedBadLengthClosesConn(t *testing.T) {
 	s.r = bufio.NewReader(conn)
 	s.state = "started"
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
-	eng.drain()
+	s.startReader(conn, s.r)
 	go func() {
+		_, _ = bufio.NewReader(eng.conn).ReadString(0) // wait for eval
 		_, _ = eng.conn.Write([]byte("-1\x00"))
 	}()
 
@@ -248,8 +268,11 @@ func TestRawLockedMalformedResponse(t *testing.T) {
 	s.conn = conn
 	s.r = bufio.NewReader(conn)
 	s.state = "started"
-	eng.drain()
-	go eng.send(xmlProlog + `<response command="eval" status="break"`) // truncated XML
+	s.startReader(conn, s.r)
+	go func() {
+		_, _ = bufio.NewReader(eng.conn).ReadString(0)                  // wait for eval
+		eng.send(xmlProlog + `<response command="eval" status="break"`) // truncated XML
+	}()
 
 	r, raw, err := s.cmd("eval", "-- x")
 	if err == nil {
@@ -271,8 +294,11 @@ func TestRawLockedWellFormedResponse(t *testing.T) {
 	s := newSession("/l", "/d")
 	s.conn = conn
 	s.r = bufio.NewReader(conn)
-	eng.drain()
-	go eng.send(xmlProlog + `<response command="run" transaction_id="1" status="break"/>`)
+	s.startReader(conn, s.r)
+	go func() {
+		_, _ = bufio.NewReader(eng.conn).ReadString(0) // wait for run
+		eng.send(xmlProlog + `<response command="run" transaction_id="1" status="break"/>`)
+	}()
 
 	r, _, err := s.cmd("run", "")
 	if err != nil || r == nil || r.Status != "break" || s.state != "break" {
@@ -287,6 +313,7 @@ func TestRawLockedSkipsStreamPackets(t *testing.T) {
 	s.r = bufio.NewReader(conn)
 	s.state = "started"
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	s.startReader(conn, s.r)
 	go func() {
 		eng.readCmd()
 		eng.send(xmlProlog + `<stream type="stdout" encoding="base64">T1VUCg==</stream>`)
@@ -307,6 +334,7 @@ func TestRawLockedSkipsNotify(t *testing.T) {
 	s.r = bufio.NewReader(conn)
 	s.state = "started"
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	s.startReader(conn, s.r)
 	go func() {
 		eng.readCmd()
 		eng.send(xmlProlog + `<notify name="breakpoint_resolved"/>`)
@@ -326,6 +354,7 @@ func TestRawLockedSkipsUnsolicitedResponse(t *testing.T) {
 	s.r = bufio.NewReader(conn)
 	s.state = "started"
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	s.startReader(conn, s.r)
 	go func() {
 		eng.readCmd()
 		eng.send(xmlProlog + `<response command="frobnicate" transaction_id="1"><error code="4"><message>unimplemented command</message></error></response>`)
@@ -353,6 +382,7 @@ func TestRawLockedSkipsWrongTransactionID(t *testing.T) {
 	s.r = bufio.NewReader(conn)
 	s.state = "started"
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	s.startReader(conn, s.r)
 	go func() {
 		eng.readCmd()
 		eng.send(xmlProlog + `<response command="status" transaction_id="99" status="stopping"/>`)
@@ -375,6 +405,7 @@ func TestRawLockedTooManySkippedPackets(t *testing.T) {
 	s.r = bufio.NewReader(conn)
 	s.state = "started"
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	s.startReader(conn, s.r)
 	go func() {
 		eng.readCmd()
 		for i := 0; i <= maxSkippedPackets; i++ {
@@ -389,19 +420,20 @@ func TestRawLockedTooManySkippedPackets(t *testing.T) {
 }
 
 func TestRawLockedReturnsDBGpError(t *testing.T) {
+	// Exercises the production command path (cmd): an engine <error> is
+	// returned with its code and message, the state/location are still applied,
+	// and the session stays usable.
 	s, eng := newActivePipe(t)
 	response := `<response command="run" transaction_id="1" status="break"><message filename="file:///d/a.php" lineno="9"/>` +
 		`<error code="5"><message><![CDATA[ command is not available ]]></message></error></response>`
 	go eng.respond(response, `<response command="stack_get" status="break"/>`)
 
-	s.mu.Lock()
-	r, raw, err := s.rawLocked("run", "")
-	s.mu.Unlock()
+	r, raw, err := s.cmd("run", "")
 	if err == nil || err.Error() != "run error 5: command is not available" {
-		t.Fatalf("rawLocked error = %v, want the engine code and message", err)
+		t.Fatalf("cmd error = %v, want the engine code and message", err)
 	}
 	if r == nil || r.Error == nil || r.Error.Code != "5" || raw != xmlProlog+response {
-		t.Fatalf("rawLocked = %+v, %q; want the parsed response and raw XML", r, raw)
+		t.Fatalf("cmd = %+v, %q; want the parsed response and raw XML", r, raw)
 	}
 	if s.state != "break" || s.conn == nil || s.file != "/l/a.php" || s.line != 9 {
 		t.Fatalf("state = %q, conn nil = %v, location = %s", s.state, s.conn == nil, s.location())
@@ -428,12 +460,13 @@ func TestSetBreakpointEncodesPath(t *testing.T) {
 				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 				tx := 1
 				if queued {
-					tx = 4
+					tx = 5
 					if _, err := s.SetBreakpoint(tc.file, 3); err != nil {
 						t.Fatal(err)
 					}
 				} else {
 					s.conn, s.r, s.state = conn, bufio.NewReader(conn), "started"
+					s.startReader(conn, s.r)
 				}
 				command := fmt.Sprintf("breakpoint_set -i %d -t line -f \"%s\" -n 3\x00", tx, tc.uri)
 				go func() {
@@ -443,6 +476,7 @@ func TestSetBreakpointEncodesPath(t *testing.T) {
 							`<response command="feature_set" success="1"/>`,
 							`<response command="feature_set" success="1"/>`,
 							`<response command="feature_set" success="1"/>`,
+							featureAsyncResponse,
 						)
 					}
 					eng.respondTo(command, `<response command="breakpoint_set" id="7"/>`)
@@ -526,6 +560,7 @@ func TestBreakpointListWithSessionMergesQueued(t *testing.T) {
 			`<response command="feature_set" success="1"/>`,
 			`<response command="feature_set" success="1"/>`,
 			`<response command="feature_set" success="1"/>`,
+			featureAsyncResponse,
 			`<response command="breakpoint_set" id="1"/>`,
 			`<response command="breakpoint_list"><breakpoint id="1" state="enabled" filename="file:///var/www/app/a.php" lineno="3"/></response>`,
 		)
@@ -697,6 +732,7 @@ func TestBreakpointRemoveEngineErrorKeepsState(t *testing.T) {
 					`<response command="feature_set" success="1"/>`,
 					`<response command="feature_set" success="1"/>`,
 					`<response command="feature_set" success="1"/>`,
+					featureAsyncResponse,
 					`<response command="breakpoint_set" id="1001"/>`,
 				)
 				line, err := bufio.NewReader(eng.conn).ReadString(0)
@@ -723,7 +759,7 @@ func TestBreakpointRemoveEngineErrorKeepsState(t *testing.T) {
 			}
 			select {
 			case line := <-command:
-				if line != "breakpoint_remove -i 5 -d "+engineID+"\x00" {
+				if line != "breakpoint_remove -i 6 -d "+engineID+"\x00" {
 					t.Fatalf("engine command = %q; want engine id %s", line, engineID)
 				}
 			default:
@@ -801,6 +837,7 @@ func TestBreakpointRemoveModes(t *testing.T) {
 				eng, conn := newPipe(t)
 				s.conn, s.r, s.state = conn, bufio.NewReader(conn), "started"
 				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+				s.startReader(conn, s.r)
 				go func() {
 					line, err := bufio.NewReader(eng.conn).ReadString(0)
 					if err != nil {
@@ -885,6 +922,7 @@ func TestBreakpointHandleAcrossSessions(t *testing.T) {
 				`<response command="feature_set" success="1"/>`,
 				`<response command="feature_set" success="1"/>`,
 				`<response command="feature_set" success="1"/>`,
+				featureAsyncResponse,
 				`<response command="breakpoint_set" id="`+id+`"/>`,
 			)
 			if i == 0 {
@@ -920,7 +958,7 @@ func TestBreakpointHandleAcrossSessions(t *testing.T) {
 		}
 		select {
 		case line := <-command:
-			if line != "breakpoint_remove -i 5 -d 2001\x00" {
+			if line != "breakpoint_remove -i 6 -d 2001\x00" {
 				t.Fatalf("engine command = %q; want the current engine id 2001", line)
 			}
 		default:
@@ -1115,6 +1153,7 @@ func TestAdoptRejectedPendingBreakpoint(t *testing.T) {
 				`<response command="feature_set" success="1"/>`,
 				`<response command="feature_set"><error code="3"><message>invalid arguments</message></error></response>`,
 				`<response command="feature_set" success="1"/>`,
+				featureAsyncResponse,
 				`<response command="breakpoint_set"><error code="200"><message>breakpoint could not be set</message></error></response>`,
 			}
 			if tc.inner != "" {
@@ -1316,6 +1355,7 @@ func slowEngine(t *testing.T, addr string, delay time.Duration, breakpoints int)
 		`<response command="feature_set" success="1"/>`,
 		`<response command="feature_set" success="1"/>`,
 		`<response command="feature_set" success="1"/>`,
+		featureAsyncResponse,
 	}
 	for i := 0; i < breakpoints; i++ {
 		responses = append(responses, `<response command="breakpoint_set" id="7"/>`)
@@ -1443,8 +1483,8 @@ func TestAdoptWellFormedInit(t *testing.T) {
 	s.pending = []bp{{file: "/d/a.php", line: 3}}
 	go func() {
 		eng.send(xmlProlog + `<init fileuri="file:///d/index.php"/>`)
-		// Answer every command (3x feature_set, breakpoint_set) with a generic response.
-		for i := 0; i < 4; i++ {
+		// Answer every command (3x feature_set, feature_get, breakpoint_set) with a generic response.
+		for i := 0; i < 5; i++ {
 			_, tx := eng.readCmd()
 			eng.send(xmlProlog + `<response command="x" transaction_id="` + tx + `" id="7"/>`)
 		}
@@ -1611,7 +1651,7 @@ func TestAdoptBreakpointWithEmptyDockerRoot(t *testing.T) {
 	go func() {
 		eng.send(xmlProlog + `<init fileuri="file:///home/dev/app/index.php"/>`)
 		r := bufio.NewReader(eng.conn)
-		for i := 0; i < 4; i++ {
+		for i := 0; i < 5; i++ {
 			line, err := r.ReadString(0)
 			if err != nil {
 				t.Errorf("engine read: %v", err)
@@ -1628,7 +1668,7 @@ func TestAdoptBreakpointWithEmptyDockerRoot(t *testing.T) {
 
 	select {
 	case line := <-command:
-		if line != "breakpoint_set -i 4 -t line -f \"file:///home/dev/app/src/Foo.php\" -n 10\x00" {
+		if line != "breakpoint_set -i 5 -t line -f \"file:///home/dev/app/src/Foo.php\" -n 10\x00" {
 			t.Fatalf("breakpoint command = %q, want a quoted absolute file URI", line)
 		}
 	default:
@@ -1749,5 +1789,254 @@ func TestFailHandshakeClearsLocation(t *testing.T) {
 	}
 	if s.adoptErr == nil {
 		t.Fatal("handshake error = nil, want the original failure")
+	}
+}
+
+// TestPauseInterruptsRun drives the case from the issue: run blocks (the engine
+// does not answer it) while pause must still be able to interrupt. The engine
+// answers the break first and then the pending run, both with status=break.
+func TestPauseInterruptsRun(t *testing.T) {
+	s, eng := newActivePipe(t)
+	go func() {
+		var runTx, breakTx string
+		for runTx == "" || breakTx == "" {
+			cmd, tx := eng.readCmd()
+			switch cmd {
+			case "run":
+				runTx = tx
+			case "break":
+				breakTx = tx
+			}
+		}
+		eng.send(xmlProlog + withTx(`<response command="break" status="break" reason="ok"/>`, breakTx))
+		eng.send(xmlProlog + withTx(`<response command="run" status="break" reason="ok"><message filename="file:///d/a.php" lineno="7"/></response>`, runTx))
+	}()
+
+	runErr := make(chan error, 1)
+	go func() {
+		_, err := s.step("run")
+		runErr <- err
+	}()
+
+	breakOut := make(chan string, 1)
+	breakErr := make(chan error, 1)
+	go func() {
+		out, err := s.step("break")
+		breakOut <- out
+		breakErr <- err
+	}()
+
+	select {
+	case err := <-breakErr:
+		if err != nil {
+			t.Fatalf("pause = %v; want it to interrupt the pending run", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pause did not return within 1s while a run was pending")
+	}
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("run = %v; want it to return after the pause", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not return within 1s after the pause")
+	}
+	if out := <-breakOut; !strings.Contains(out, "state=break") {
+		t.Fatalf("pause output = %q; want state=break", out)
+	}
+	if got := s.Status(); !strings.Contains(got, "state=break") {
+		t.Fatalf("Status = %q; want state=break after the pause", got)
+	}
+}
+
+// TestPendingCommandsFailOnDisconnect checks that a command blocked on the
+// engine returns when the connection drops, and that the session is cleared.
+func TestPendingCommandsFailOnDisconnect(t *testing.T) {
+	s, eng := newActivePipe(t)
+	runErr := make(chan error, 1)
+	go func() {
+		_, err := s.step("run")
+		runErr <- err
+	}()
+	eng.readCmd() // wait until run is on the wire
+	_ = eng.conn.Close()
+
+	select {
+	case err := <-runErr:
+		if err == nil {
+			t.Fatal("run = nil; want an error after the engine disconnects")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not return within 1s after the disconnect")
+	}
+	if got := s.Status(); !strings.Contains(got, "state=no session") {
+		t.Fatalf("Status = %q; want no session after the disconnect", got)
+	}
+}
+
+// TestDetachWhileRunPending checks that Detach does not hang behind a pending
+// run and that the run is released when the connection is dropped.
+func TestDetachWhileRunPending(t *testing.T) {
+	s, eng := newActivePipe(t)
+	runErr := make(chan error, 1)
+	go func() {
+		_, err := s.step("run")
+		runErr <- err
+	}()
+	eng.readCmd() // the run command is pending in the engine
+
+	detached := make(chan struct{})
+	go func() {
+		_, _ = s.Detach()
+		close(detached)
+	}()
+	select {
+	case <-detached:
+	case <-time.After(time.Second):
+		t.Fatal("Detach did not return within 1s while a run was pending")
+	}
+	select {
+	case err := <-runErr:
+		if err == nil {
+			t.Fatal("run = nil; want an error after detach")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not return within 1s after detach")
+	}
+}
+
+// TestStopWhileRunPending is the Stop counterpart of TestDetachWhileRunPending.
+func TestStopWhileRunPending(t *testing.T) {
+	s, eng := newActivePipe(t)
+	runErr := make(chan error, 1)
+	go func() {
+		_, err := s.step("run")
+		runErr <- err
+	}()
+	eng.readCmd() // the run command is pending in the engine
+
+	stopped := make(chan struct{})
+	go func() {
+		_, _ = s.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return within 1s while a run was pending")
+	}
+	select {
+	case err := <-runErr:
+		if err == nil {
+			t.Fatal("run = nil; want an error after stop")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run did not return within 1s after stop")
+	}
+}
+
+// TestStartReaderFailsPreviousWaiters reproduces the ordering in which a new
+// reader replaces the waiter table before the old reader's finishReader runs:
+// the old reader then early-returns on the readerConn mismatch, so the old
+// command must be failed by startReader itself instead of hanging forever.
+func TestStartReaderFailsPreviousWaiters(t *testing.T) {
+	s, eng := newActivePipe(t)
+	runErr := make(chan error, 1)
+	go func() {
+		_, err := s.step("run")
+		runErr <- err
+	}()
+	eng.readCmd() // run is pending on the old connection; its reader stays alive
+
+	// A new connection's reader replaces the old one. The old connection is not
+	// closed, so its reader cannot fail the waiter through finishReader.
+	_, conn2 := newPipe(t)
+	_ = conn2.SetDeadline(time.Now().Add(2 * time.Second))
+	s.startReader(conn2, bufio.NewReader(conn2))
+
+	select {
+	case err := <-runErr:
+		if err == nil {
+			t.Fatal("the pending run must fail when a new reader replaces the old one")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the pending run was orphaned by the new reader")
+	}
+}
+
+// TestLateReaderDoesNotDisturbNewSession checks the readerConn identity guard:
+// a reader for an old connection that finishes after a new one started must not
+// drop the new session or its waiters.
+func TestLateReaderDoesNotDisturbNewSession(t *testing.T) {
+	s, _ := newActivePipe(t)
+	oldConn := s.conn
+
+	_, conn2 := newPipe(t)
+	_ = conn2.SetDeadline(time.Now().Add(2 * time.Second))
+	s.mu.Lock()
+	s.conn = conn2
+	s.r = bufio.NewReader(conn2)
+	s.mu.Unlock()
+	s.startReader(conn2, s.r)
+
+	// The old reader observes its connection ending after the new reader started.
+	s.finishReader(oldConn, errors.New("old connection closed"))
+
+	if got := s.Status(); !strings.Contains(got, "state=started") {
+		t.Fatalf("Status = %q; a late reader must not drop the new session", got)
+	}
+	s.mu.Lock()
+	conn := s.conn
+	s.mu.Unlock()
+	if conn != conn2 {
+		t.Fatal("a late reader must not clear the new connection")
+	}
+}
+
+// TestPauseRejectedWhenAsyncBreakUnsupported checks the clear error when the
+// engine reported supports_async=0 during the handshake.
+func TestPauseRejectedWhenAsyncBreakUnsupported(t *testing.T) {
+	s := newSession("/l", "/d")
+	s.asyncBreak = false
+	if _, err := s.step("break"); err == nil || !strings.Contains(err.Error(), "supports_async=0") {
+		t.Fatalf("pause = %v; want a supports_async=0 error", err)
+	}
+}
+
+// TestAdoptNegotiatesAsyncBreak checks that adopt reads supports_async and
+// disables pause when the engine answers 0.
+func TestAdoptNegotiatesAsyncBreak(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"supported", "1", true},
+		{"unsupported", "0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng, conn := newPipe(t)
+			s := newSession("/l", "/d")
+			if _, err := s.SetBreakpoint("a.php", 3); err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			go func() {
+				eng.send(xmlProlog + `<init fileuri="file:///d/index.php"/>`)
+				eng.respond(
+					`<response command="feature_set" success="1"/>`,
+					`<response command="feature_set" success="1"/>`,
+					`<response command="feature_set" success="1"/>`,
+					`<response command="feature_get"><property name="supports_async" type="int" encoding="none">`+tc.value+`</property></response>`,
+					`<response command="breakpoint_set" id="7"/>`,
+				)
+			}()
+
+			s.adopt(conn)
+			if s.asyncBreak != tc.want {
+				t.Fatalf("asyncBreak = %v; want %v for supports_async=%s", s.asyncBreak, tc.want, tc.value)
+			}
+		})
 	}
 }

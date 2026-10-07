@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -308,5 +310,95 @@ func TestServeIOLogsWriteErrors(t *testing.T) {
 	// that serveIO logs the failure and returns at EOF instead of panicking or hanging.
 	if w.calls < 1 {
 		t.Fatalf("want the first response attempted, got %d writes", w.calls)
+	}
+}
+
+// TestServeIOConcurrentCalls checks that a blocking tools/call (run) does not
+// stop the loop from handling the next request (status): the status reply must
+// arrive first, and every emitted line must be valid JSON.
+func TestServeIOConcurrentCalls(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	s.conn = conn
+	s.r = bufio.NewReader(conn)
+	s.state = "started"
+	s.startReader(conn, s.r)
+	m := newMCP(s)
+
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	t.Cleanup(func() { _ = inW.Close(); _ = outW.Close() })
+	lines := make(chan string, 8)
+	go func() {
+		br := bufio.NewReader(outR)
+		for {
+			line, err := br.ReadBytes('\n')
+			if len(bytes.TrimSpace(line)) > 0 {
+				lines <- string(line)
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	serveDone := make(chan struct{})
+	go func() {
+		m.serveIO(inR, outW)
+		close(serveDone)
+	}()
+
+	// The engine reads the run command but never answers it. Signal when it has
+	// the command so the test never tears down while readCmd is still blocked
+	// (which would make it report an error after the test completed).
+	runRead := make(chan struct{})
+	go func() {
+		eng.readCmd()
+		close(runRead)
+	}()
+
+	write := func(id, name string) {
+		req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"%s","arguments":{}}}`, id, name)
+		if _, err := inW.Write([]byte(req + "\n")); err != nil {
+			t.Errorf("write request: %v", err)
+		}
+	}
+	write("1", "run")
+	write("2", "status")
+
+	var first string
+	select {
+	case first = <-lines:
+	case <-time.After(time.Second):
+		t.Fatal("no response within 1s; the status call did not run while run was pending")
+	}
+	got := decodeResponses(t, first)
+	if len(got) != 1 || string(got[0].ID) != "2" {
+		t.Fatalf("first response = %s; want the status reply (id 2) before the pending run", first)
+	}
+	if got[0].Error != nil {
+		t.Fatalf("status reply error: %+v", got[0].Error)
+	}
+
+	// The engine must have read the run command before we tear anything down.
+	select {
+	case <-runRead:
+	case <-time.After(time.Second):
+		t.Fatal("the engine did not receive the run command")
+	}
+
+	// Any further line must also be valid JSON.
+	select {
+	case line := <-lines:
+		_ = decodeResponses(t, line)
+	default:
+	}
+
+	// Release the pending run so serveIO can finish, then end the input.
+	_ = eng.conn.Close()
+	_ = inW.Close()
+	select {
+	case <-serveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveIO did not return after the run was released")
 	}
 }

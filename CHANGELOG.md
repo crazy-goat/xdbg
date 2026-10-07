@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- MCP `tools/call` requests now run concurrently and DBGp replies are routed to the right command by `transaction_id` through a per-connection reader goroutine. `xdbg_pause` can now interrupt a running `xdbg_run`, and `status`, `stop` and `detach` answer while a `run` is pending. When the engine reports `supports_async=0`, `xdbg_pause` returns `engine does not support async break (supports_async=0)` instead of blocking (#25)
 - DBGp replies are now matched by root element and `transaction_id` instead of taking the next packet. `<stream>`, `<notify>` and non-matching `<response>` packets are skipped (and logged), so an unsolicited or injected reply can no longer desync the session (#33)
 - `xdbg --version` and the MCP `serverInfo.version` now fall back to the module build info when the `-ldflags` value is absent, so `go install github.com/crazy-goat/xdbg@vX.Y.Z` reports the tag instead of `dev`. Local builds and branch installs such as `@main` still report `dev`, and release binaries keep reporting the tag from `-ldflags` (#54)
 - `listen`, `request`, `request_from_files` and `run_command` now keep waiting when Xdebug connects just before the accept timeout and the DBGp handshake finishes after it, instead of reporting "no engine connected" and leaving an orphan paused session. The handshake has its own deadline, and a timeout drops the accepted connection so the next `listen` works (#27)

@@ -358,7 +358,11 @@ location. Use it to escape a function you stepped into by mistake.
 Breaks (pauses) execution immediately, as if a breakpoint were hit at the
 current line. Returns the new state (`break`) and location. Use it to
 interrupt a long-running `xdbg_run` and regain control. Only meaningful while
-a session is active and running.
+a session is active and running. MCP calls are handled concurrently, so
+`xdbg_status`, `xdbg_stop` and `xdbg_detach` also answer while an `xdbg_run`
+is still pending. Interrupting a running script needs an engine that supports
+asynchronous `break`; when Xdebug reported `supports_async=0`, `xdbg_pause`
+returns `engine does not support async break (supports_async=0)`.
 
 ### `xdbg_stack()`
 Returns the call stack at the current pause point, with each frame's depth,
