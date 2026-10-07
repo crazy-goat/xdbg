@@ -20,6 +20,9 @@ import (
 
 const maxPacketLen = 64 << 20 // 64 MiB
 
+// maxSkippedPackets limits how many non-matching packets rawLocked skips for one command.
+const maxSkippedPackets = 1000
+
 // handshakeTimeout bounds the DBGp handshake (the <init> packet plus the
 // feature/breakpoint round trips) after Xdebug has connected. It is a variable
 // so tests can shorten it.
@@ -94,10 +97,12 @@ func newSession(localRoot, dockerRoot string) *session {
 	}
 }
 
-// openOnce opens the DBGp port, accepts exactly one Xdebug connection, calls
-// adopt(), then closes the port. The port is closed whether the session ends
-// cleanly or times out, so browser/curl requests can never accidentally connect
-// to a debug session that is no longer active.
+// openOnce opens the DBGp port and accepts exactly one Xdebug connection. As
+// soon as the first connection is accepted, the port is closed, so a second
+// Xdebug connection is refused at once instead of hanging in the listen backlog
+// while adopt() runs. It then calls adopt() to drive the session. The deferred
+// close covers the timeout/closeLn cases too, so browser/curl requests can
+// never accidentally connect to a debug session that is no longer active.
 //
 // It returns acceptResult, which receives the listener's Accept error: nil once
 // a connection was accepted (before the DBGp handshake starts), or a non-nil
@@ -150,6 +155,14 @@ func (s *session) openOnce(timeout, portWait time.Duration) (<-chan error, error
 		s.acceptedConn = conn
 		s.mu.Unlock()
 		acceptResult <- nil
+		// Close the listener before adopt() runs: adopt can execute the script
+		// to completion (no breakpoints), and without this a second Xdebug
+		// connection would complete the TCP handshake in the kernel backlog and
+		// block until the deferred close, delaying an unrelated PHP request by
+		// the whole runtime of the first script. A second connect now gets
+		// "connection refused" and Xdebug continues at once. s.ln stays set until
+		// adopt returns, so acquireListener keeps refusing a new listen.
+		ln.Close()
 		s.adopt(conn)
 	}()
 	return acceptResult, nil
@@ -388,14 +401,27 @@ func (s *session) rawLocked(name, args string) (*xResp, string, error) {
 		s.dropLocked()
 		return nil, "", err
 	}
-	xmlStr, err := s.readPacket()
-	if err != nil {
-		s.dropLocked()
-		return nil, "", err
-	}
+	want := strconv.Itoa(s.tx)
 	var r xResp
-	if err := unmarshal(xmlStr, &r); err != nil {
-		return nil, xmlStr, fmt.Errorf("parse %s response: %w", name, err)
+	var xmlStr string
+	for skipped := 0; ; skipped++ {
+		if skipped > maxSkippedPackets {
+			return nil, "", fmt.Errorf("%s: no response with transaction_id %s after %d other packets", name, want, maxSkippedPackets)
+		}
+		var err error
+		xmlStr, err = s.readPacket()
+		if err != nil {
+			s.dropLocked() // keep the #36 behaviour: drop the connection on a read error
+			return nil, "", err
+		}
+		r = xResp{}
+		if err = unmarshal(xmlStr, &r); err != nil {
+			return nil, xmlStr, fmt.Errorf("parse %s response: %w", name, err)
+		}
+		if r.XMLName.Local == "response" && r.TransactionID == want {
+			break
+		}
+		log.Printf("dropping DBGp packet while waiting for %s (tx %s): <%s transaction_id=%q>", name, want, r.XMLName.Local, r.TransactionID)
 	}
 	if r.Status != "" {
 		s.state = r.Status

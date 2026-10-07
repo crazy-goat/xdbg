@@ -48,7 +48,8 @@ plus CLI/Symfony command debugging and host↔container path translation.
    tool calls. Your agent sets a breakpoint, fires the request, inspects
    variables, steps — all in one conversation.
 4. The DBGp port is **ephemeral** — bound only during a tool call and released
-   immediately after. Between calls, port 9003 is free for PhpStorm, browser
+   as soon as Xdebug connects, so the port is free again while the session is
+   still being driven. Between calls, port 9003 is free for PhpStorm, browser
    Xdebug, or any other debugger.
 
 DBGp packets have a maximum payload length of 64 MiB and must end with NUL.
