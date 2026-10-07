@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `--listen-addr` chooses the address the DBGp listener binds to, `0.0.0.0` by default, so a laptop can keep the debug port off the network with `--listen-addr 127.0.0.1`. It takes an IP literal, so a name such as `localhost` is rejected instead of binding whichever address it resolves to first (#46)
+
+### Changed
+- The port-conflict check compares the address the DBGp listener binds to with the address lsof reports for the holder, so a debugger listening on another address is no longer reported as holding the port (#46)
+
 ## [0.3.0] - 2026-10-07
 
 ### Fixed

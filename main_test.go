@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"runtime/debug"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +37,85 @@ func TestMCPSubcommandAcceptsFlags(t *testing.T) {
 func TestDbgPortDefault(t *testing.T) {
 	if got := executeHelp(t); got != "9003" {
 		t.Errorf("dbg-port = %q, want 9003", got)
+	}
+}
+
+func TestListenAddrDefaultIsBindAnywhere(t *testing.T) {
+	root := newRootCmd()
+	flag := root.PersistentFlags().Lookup("listen-addr")
+	if flag == nil {
+		t.Fatal("listen-addr is not a persistent flag")
+	}
+	if got := flag.Value.String(); got != "0.0.0.0" {
+		t.Errorf("listen-addr = %q, want 0.0.0.0", got)
+	}
+}
+
+func TestMCPSessionUsesTheListenAddrAndPort(t *testing.T) {
+	s, err := mcpSession("127.0.0.1", "9071", "/tmp/app", "/var/www/app")
+	if err != nil {
+		t.Fatalf("mcpSession: %v", err)
+	}
+	if s.dbgAddr != "127.0.0.1:9071" {
+		t.Errorf("dbgAddr = %q, want 127.0.0.1:9071", s.dbgAddr)
+	}
+	if s.localRoot != "/tmp/app" || s.dockerRoot != "/var/www/app" {
+		t.Errorf("roots = %q, %q, want /tmp/app, /var/www/app", s.localRoot, s.dockerRoot)
+	}
+}
+
+func TestBadListenAddrFailsBeforeTheServerStarts(t *testing.T) {
+	// RunE builds the session before serving, so an address the listener cannot
+	// use is reported and nothing starts — on the mcp subcommand too, which
+	// inherits the flag from the root.
+	for _, args := range [][]string{
+		{"--listen-addr", "localhost"},
+		{"mcp", "--listen-addr", "1.2.3"},
+	} {
+		root := newRootCmd()
+		var out bytes.Buffer
+		root.SetOut(&out)
+		root.SetErr(&out)
+		root.SetArgs(args)
+		err := root.Execute()
+		if err == nil || !strings.Contains(err.Error(), `invalid --listen-addr`) {
+			t.Errorf("Execute(%q) = %v, want an invalid --listen-addr error", args, err)
+		}
+	}
+}
+
+func TestDbgListenAddr(t *testing.T) {
+	tests := []struct {
+		listenAddr string
+		want       string
+	}{
+		{"0.0.0.0", "0.0.0.0:9003"},
+		{"127.0.0.1", "127.0.0.1:9003"},
+		{"172.17.0.1", "172.17.0.1:9003"},
+		{"::1", "[::1]:9003"},
+		{"::", "[::]:9003"},
+	}
+	for _, tt := range tests {
+		got, err := dbgListenAddr(tt.listenAddr, "9003")
+		if err != nil {
+			t.Errorf("dbgListenAddr(%q) error: %v", tt.listenAddr, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("dbgListenAddr(%q) = %q, want %q", tt.listenAddr, got, tt.want)
+		}
+	}
+}
+
+func TestDbgListenAddrRejectsANonIP(t *testing.T) {
+	// --listen-addr takes an IP literal only: a name such as localhost may
+	// resolve to ::1 first, so the listener would bind an address the caller did
+	// not write.
+	for _, listenAddr := range []string{"localhost", "example.com", "1.2.3", "", "127.0.0.1:9003"} {
+		got, err := dbgListenAddr(listenAddr, "9003")
+		if err == nil {
+			t.Errorf("dbgListenAddr(%q) = %q, want an error", listenAddr, got)
+		}
 	}
 }
 

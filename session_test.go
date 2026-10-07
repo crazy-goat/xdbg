@@ -2110,3 +2110,101 @@ func TestAdoptNegotiatesAsyncBreak(t *testing.T) {
 		})
 	}
 }
+func TestPortHolderConflictRules(t *testing.T) {
+	// A holder on our own address takes the connection, a holder on another one
+	// does not, and binding a wildcard conflicts with every holder — the verdict
+	// --listen-addr 0.0.0.0 has always given, whatever the holder's address.
+	tests := []struct {
+		bindHost string
+		name     string
+		want     bool
+	}{
+		{"127.0.0.1", "*:9003", true},
+		{"127.0.0.1", "127.0.0.1:9003", true},
+		{"127.0.0.1", "192.168.1.5:9003", false},
+		{"0.0.0.0", "127.0.0.1:9003", true},
+		{"0.0.0.0", "*:9003", true},
+		{"::1", "[::1]:9003", true},
+		{"::1", "[::]:9003", true},
+		{"::1", "[0:0:0:0:0:0:0:1]:9003", true}, // one address, two spellings
+		{"127.0.0.1", "[::ffff:127.0.0.1]:9003", true},
+		{"::1", "127.0.0.1:9003", false},
+		{"::", "127.0.0.1:9003", true},
+		{"127.0.0.1", "garbage", true}, // unreadable name keeps the port-only verdict
+	}
+	for _, tt := range tests {
+		if got := conflicts(tt.bindHost, tt.name); got != tt.want {
+			t.Errorf("conflicts(%q, %q) = %v, want %v", tt.bindHost, tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestPortHolderFromLsof(t *testing.T) {
+	// Verbatim lsof output: macOS writes the state into the NAME column and Linux
+	// lsof does not, and a port's holders come in lsof's own order.
+	const header = "COMMAND   PID          USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME\n"
+	const macOS = header +
+		"Python  6653 paolovalletta    5u  IPv4 0x1111111111111111      0t0  TCP 192.168.1.5:9003 (LISTEN)\n" +
+		"Python  6672 paolovalletta    3u  IPv4 0x2222222222222222      0t0  TCP 127.0.0.1:9003 (LISTEN)\n"
+	const linux = "COMMAND PID USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME\n" +
+		"python 1234 dev    3u  IPv4 1234567      0t0  TCP 127.0.0.1:9003\n"
+
+	tests := []struct {
+		name     string
+		bindHost string
+		out      string
+		want     string
+	}{
+		{"the conflicting holder is not the one lsof printed first", "127.0.0.1", macOS, "Python (pid=6672 user=paolovalletta)"},
+		{"the other address's holder is still reachable", "192.168.1.5", macOS, "Python (pid=6653 user=paolovalletta)"},
+		{"no holder conflicts", "10.0.0.1", macOS, ""},
+		{"linux output carries no state in NAME", "127.0.0.1", linux, "python (pid=1234 user=dev)"},
+		{"a wildcard holder conflicts with a specific address", "127.0.0.1", header + "python 1 dev 3u IPv4 1 0t0 TCP *:9003 (LISTEN)\n", "python (pid=1 user=dev)"},
+		{"a holder on another address does not", "127.0.0.1", header + "python 1 dev 3u IPv4 1 0t0 TCP 10.1.1.1:9003 (LISTEN)\n", ""},
+		{"header only", "127.0.0.1", header, ""},
+		{"empty output", "127.0.0.1", "", ""},
+	}
+	for _, tt := range tests {
+		if got := portHolderFromLsof(tt.bindHost, tt.out); got != tt.want {
+			t.Errorf("%s: portHolderFromLsof(%q) = %q, want %q", tt.name, tt.bindHost, got, tt.want)
+		}
+	}
+}
+
+func TestLsofHost(t *testing.T) {
+	tests := []struct {
+		name string
+		want string
+		ok   bool
+	}{
+		{"*:9003", "*", true},
+		{"127.0.0.1:9003", "127.0.0.1", true},
+		{"[::1]:9003", "::1", true},
+		{"[::]:9003", "::", true},
+	}
+	for _, tt := range tests {
+		got, ok := lsofHost(tt.name)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("lsofHost(%q) = %q, %v, want %q, %v", tt.name, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestOpenOnceBindsListenAddr(t *testing.T) {
+	s := newSession(t.TempDir(), "")
+	s.dbgAddr = "127.0.0.1:0" // port 0: the OS picks one, and lsof is skipped
+	if _, err := s.openOnce(2*time.Second, 0); err != nil {
+		t.Fatalf("openOnce: %v", err)
+	}
+	t.Cleanup(s.closeLn)
+
+	s.mu.Lock()
+	ln := s.ln
+	s.mu.Unlock()
+	if ln == nil {
+		t.Fatal("no listener published")
+	}
+	if got := ln.Addr().(*net.TCPAddr).IP.String(); got != "127.0.0.1" {
+		t.Errorf("listener bound %s, want 127.0.0.1", got)
+	}
+}

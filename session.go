@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"net/url"
 	"os/exec"
 	"path"
@@ -254,10 +255,63 @@ func isAddrInUse(err error) bool {
 	return strings.Contains(err.Error(), "address already in use")
 }
 
-// portHolder uses lsof to identify the process listening on addr (host:port).
-// Returns a human-readable string (COMMAND PID USER) or "" if unavailable.
+// conflicts reports whether a listener lsof names `name` would take the
+// connection a listener on bindHost wants to receive. A holder on the same
+// address and a holder on a wildcard address both take it; when xdbg binds a
+// wildcard, every holder does. A name it cannot read conflicts, which keeps the
+// port-only verdict the default --listen-addr 0.0.0.0 has always had.
+func conflicts(bindHost, name string) bool {
+	host, ok := lsofHost(name)
+	if !ok {
+		return true
+	}
+	if isWildcardHost(bindHost) || isWildcardHost(host) {
+		return true
+	}
+	return canonicalAddr(host) == canonicalAddr(bindHost)
+}
+
+// canonicalAddr spells an IP literal one way, so equivalent addresses compare
+// equal (`::1` and `0:0:0:0:0:0:0:1`, `::ffff:127.0.0.1` and `127.0.0.1`). A
+// value it cannot parse comes back unchanged, and `*` is not an address.
+func canonicalAddr(host string) string {
+	if a, err := netip.ParseAddr(host); err == nil {
+		return a.Unmap().String()
+	}
+	return host
+}
+
+// lsofHost reads the address out of lsof's NAME column, which -nP writes as
+// `host:port` with an IPv6 host in brackets and a wildcard as `*`: `*:9003`,
+// `127.0.0.1:9003`, `[::1]:9003`.
+func lsofHost(name string) (string, bool) {
+	if strings.HasPrefix(name, "[") {
+		end := strings.Index(name, "]")
+		if end < 0 {
+			return "", false
+		}
+		return name[1:end], true
+	}
+	i := strings.LastIndex(name, ":")
+	if i <= 0 {
+		return "", false
+	}
+	return name[:i], true
+}
+
+// isWildcardHost reports whether host is the bind-anywhere address of either
+// family, in Go's spelling (`0.0.0.0`, `::`) or lsof's (`*`).
+func isWildcardHost(host string) bool {
+	return host == "*" || host == "0.0.0.0" || host == "::"
+}
+
+// portHolder uses lsof to identify the process listening on addr's port that
+// would take the connection addr's listener wants, so binding a specific
+// --listen-addr does not report a debugger on another address as busy. Returns a
+// human-readable string (COMMAND PID USER), or "" when nothing conflicts or lsof
+// is unavailable.
 func portHolder(addr string) string {
-	_, port, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return ""
 	}
@@ -265,12 +319,29 @@ func portHolder(addr string) string {
 	if err != nil {
 		return ""
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return portHolderFromLsof(host, string(out))
+}
+
+// portHolderFromLsof picks the holder in lsof's output that would take the
+// connection a listener on bindHost wants, or "" when none does. lsof lists the
+// holders of a port in its own order, so every line is read: the first one is not
+// necessarily the one that matters. macOS writes the state into the NAME column
+// (`127.0.0.1:9003 (LISTEN)`); Linux lsof does not.
+func portHolderFromLsof(bindHost, out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
 	for _, line := range lines[1:] { // skip header
 		fields := strings.Fields(line)
-		if len(fields) >= 3 {
-			return fmt.Sprintf("%s (pid=%s user=%s)", fields[0], fields[1], fields[2])
+		if len(fields) < 3 {
+			continue
 		}
+		name := fields[len(fields)-1]
+		if name == "(LISTEN)" && len(fields) > 3 {
+			name = fields[len(fields)-2]
+		}
+		if !conflicts(bindHost, name) {
+			continue
+		}
+		return fmt.Sprintf("%s (pid=%s user=%s)", fields[0], fields[1], fields[2])
 	}
 	return ""
 }
