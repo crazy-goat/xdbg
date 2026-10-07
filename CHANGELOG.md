@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-07
+
 ### Fixed
 - MCP `tools/call` requests now run concurrently and DBGp replies are routed to the right command by `transaction_id` through a per-connection reader goroutine. `xdbg_pause` can now interrupt a running `xdbg_run`, and `status`, `stop` and `detach` answer while a `run` is pending. When the engine reports `supports_async=0`, `xdbg_pause` returns `engine does not support async break (supports_async=0)` instead of blocking (#25)
 - `run_command` now watches the container command and returns as soon as it exits when no Xdebug connection arrives, reporting the command output and exit status (or that Xdebug is off) instead of waiting for the full timeout and losing the output. A short grace still honours an engine that connects just before the process exits (#58)
