@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- The DBGp listener now closes as soon as the first Xdebug connection is accepted, so a second Xdebug connection is refused at once instead of hanging in the listen backlog while `adopt()` runs a breakpoint-free script to completion. This no longer delays an unrelated PHP request by the full runtime of the first script (#34)
 - DBGp replies are now matched by root element and `transaction_id` instead of taking the next packet. `<stream>`, `<notify>` and non-matching `<response>` packets are skipped (and logged), so an unsolicited or injected reply can no longer desync the session (#33)
 - `xdbg --version` and the MCP `serverInfo.version` now fall back to the module build info when the `-ldflags` value is absent, so `go install github.com/crazy-goat/xdbg@vX.Y.Z` reports the tag instead of `dev`. Local builds and branch installs such as `@main` still report `dev`, and release binaries keep reporting the tag from `-ldflags` (#54)
 - `listen`, `request`, `request_from_files` and `run_command` now keep waiting when Xdebug connects just before the accept timeout and the DBGp handshake finishes after it, instead of reporting "no engine connected" and leaving an orphan paused session. The handshake has its own deadline, and a timeout drops the accepted connection so the next `listen` works (#27)

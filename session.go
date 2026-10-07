@@ -86,10 +86,12 @@ func newSession(localRoot, dockerRoot string) *session {
 	}
 }
 
-// openOnce opens the DBGp port, accepts exactly one Xdebug connection, calls
-// adopt(), then closes the port. The port is closed whether the session ends
-// cleanly or times out, so browser/curl requests can never accidentally connect
-// to a debug session that is no longer active.
+// openOnce opens the DBGp port and accepts exactly one Xdebug connection. As
+// soon as the first connection is accepted, the port is closed, so a second
+// Xdebug connection is refused at once instead of hanging in the listen backlog
+// while adopt() runs. It then calls adopt() to drive the session. The deferred
+// close covers the timeout/closeLn cases too, so browser/curl requests can
+// never accidentally connect to a debug session that is no longer active.
 //
 // It returns acceptResult, which receives the listener's Accept error: nil once
 // a connection was accepted (before the DBGp handshake starts), or a non-nil
@@ -142,6 +144,14 @@ func (s *session) openOnce(timeout, portWait time.Duration) (<-chan error, error
 		s.acceptedConn = conn
 		s.mu.Unlock()
 		acceptResult <- nil
+		// Close the listener before adopt() runs: adopt can execute the script
+		// to completion (no breakpoints), and without this a second Xdebug
+		// connection would complete the TCP handshake in the kernel backlog and
+		// block until the deferred close, delaying an unrelated PHP request by
+		// the whole runtime of the first script. A second connect now gets
+		// "connection refused" and Xdebug continues at once. s.ln stays set until
+		// adopt returns, so acquireListener keeps refusing a new listen.
+		ln.Close()
 		s.adopt(conn)
 	}()
 	return acceptResult, nil
