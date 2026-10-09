@@ -79,7 +79,14 @@ func (s *session) requestErrorUnlessReady(ready <-chan struct{}, acceptResult <-
 		}
 	default:
 	}
-	s.closeLn()
+	if s.cancelPendingAccept(ready) {
+		select {
+		case <-ready:
+			return nil
+		default:
+		}
+		return s.awaitHandshake(ready)
+	}
 	return fmt.Errorf("request failed: %w", err)
 }
 

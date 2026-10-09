@@ -372,6 +372,142 @@ func TestRequestErrorUnlessReady(t *testing.T) {
 	}
 }
 
+func TestRequestErrorClosesAcceptedConnectionBeforeItIsReported(t *testing.T) {
+	s := newSession("", "")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, client := net.Pipe()
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		client.Close()
+		s.closeLn()
+	})
+	s.mu.Lock()
+	s.ln = ln
+	s.acceptedConn = server
+	s.mu.Unlock()
+
+	acceptResult := make(chan error, 1)
+	err = s.requestErrorUnlessReady(make(chan struct{}), acceptResult, io.EOF)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("requestErrorUnlessReady = %v; want wrapped client error", err)
+	}
+
+	if _, err := client.Read(make([]byte, 1)); err == nil {
+		t.Fatal("accepted connection is still open after the request error")
+	} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatalf("accepted connection is still open after the request error: %v", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.acceptedConn != nil {
+		t.Fatal("accepted connection reference was not cleared")
+	}
+}
+
+func TestRequestErrorBeforeAcceptPublicationDropsLateConnection(t *testing.T) {
+	s := newSession("", "")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := &acceptAttempt{}
+	s.mu.Lock()
+	s.ln = ln
+	s.acceptAttempt = attempt
+	s.mu.Unlock()
+	t.Cleanup(s.closeLn)
+
+	acceptResult := make(chan error, 1)
+	err = s.requestErrorUnlessReady(make(chan struct{}), acceptResult, io.EOF)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("requestErrorUnlessReady = %v; want wrapped client error", err)
+	}
+
+	accepted, client := net.Pipe()
+	t.Cleanup(func() { client.Close() })
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	s.acceptConnection(attempt, accepted, ln, acceptResult)
+
+	if got := s.Status(); !strings.Contains(got, "state=no session") {
+		t.Fatalf("late accepted connection left session %q; want no session", got)
+	}
+	select {
+	case err := <-acceptResult:
+		t.Fatalf("cancelled accept reported a connection: %v", err)
+	default:
+	}
+	if _, err := client.Read(make([]byte, 1)); err == nil {
+		t.Fatal("late accepted connection remains open")
+	} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatalf("late accepted connection remains open: %v", err)
+	}
+}
+
+func TestCancelPendingAcceptPreservesReportedConnection(t *testing.T) {
+	s := newSession("", "")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, client := net.Pipe()
+	t.Cleanup(func() {
+		client.Close()
+		s.closeLn()
+	})
+	attempt := &acceptAttempt{reported: true}
+	s.mu.Lock()
+	s.ln = ln
+	s.acceptAttempt = attempt
+	s.acceptedConn = accepted
+	s.mu.Unlock()
+
+	if !s.cancelPendingAccept(make(chan struct{})) {
+		t.Fatal("reported accept was cancelled; want handshake result to win")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ln != ln || s.acceptedConn != accepted || attempt.cancelled {
+		t.Fatal("reported accept was changed while preserving the handshake result")
+	}
+}
+
+func TestCancelPendingAcceptPreservesReadySession(t *testing.T) {
+	s := newSession("", "")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, client := net.Pipe()
+	t.Cleanup(func() {
+		client.Close()
+		s.closeLn()
+	})
+	ready := make(chan struct{})
+	close(ready)
+	attempt := &acceptAttempt{}
+	s.mu.Lock()
+	s.ln = ln
+	s.acceptAttempt = attempt
+	s.acceptedConn = accepted
+	s.mu.Unlock()
+
+	if !s.cancelPendingAccept(ready) {
+		t.Fatal("ready session was cancelled; want completed result to win")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ln != ln || s.acceptedConn != accepted || attempt.cancelled {
+		t.Fatal("ready session was changed while preserving its result")
+	}
+}
+
 func servePausedRequestTestEngine(addr string, connReady chan<- net.Conn) error {
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
