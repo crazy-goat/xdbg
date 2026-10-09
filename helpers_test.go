@@ -2,10 +2,43 @@ package main
 
 import (
 	"bufio"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
 )
+
+// dialEngine plays Xdebug over TCP: it dials addr, sends <init>, then answers
+// each command. `run` gets status="stopping", every other command a plain
+// response. It returns when the debugger closes the connection.
+func dialCommandEngine(addr string) error {
+	c, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := c.Write([]byte(dbgpPacket(xmlProlog + `<init fileuri="file:///d/index.php"/>`))); err != nil {
+		return err
+	}
+	r := bufio.NewReader(c)
+	for tx := 1; ; tx++ {
+		cmd, err := r.ReadString(0)
+		if err != nil {
+			return nil // debugger closed the connection: done
+		}
+		name := strings.Fields(cmd)[0]
+		status := "break"
+		if name == "run" {
+			status = "stopping"
+		}
+		reply := fmt.Sprintf(`<response command="%s" transaction_id="%d" status="%s" id="1"/>`, name, tx, status)
+		if _, err := c.Write([]byte(dbgpPacket(xmlProlog + reply))); err != nil {
+			return nil
+		}
+	}
+}
 
 // answer reads one command, replies with xml, and returns the complete command
 // including the transaction id. The result channel is buffered so the engine
