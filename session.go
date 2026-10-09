@@ -1218,16 +1218,6 @@ func (s *session) Stop() (string, error) {
 	return "stopped", nil
 }
 
-func (s *session) Raw(cmd string) (string, error) {
-	parts := strings.SplitN(cmd, " ", 2)
-	args := ""
-	if len(parts) == 2 {
-		args = parts[1]
-	}
-	_, xmlStr, err := s.cmd(parts[0], args)
-	return xmlStr, err
-}
-
 // XdebugEnable/Disable/ContainerStatus run the user-supplied shell commands.
 
 func (s *session) XdebugEnable() (string, error)          { return s.runShell(s.enableCmd) }

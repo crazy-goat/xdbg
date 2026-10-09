@@ -1124,17 +1124,6 @@ func TestEvalEngineError(t *testing.T) {
 	}
 }
 
-func TestRawEngineError(t *testing.T) {
-	s, eng := newActivePipe(t)
-	response := `<response command="property_get" transaction_id="1"><error code="300"><message>can not get property</message></error></response>`
-	go eng.respond(response)
-
-	raw, err := s.Raw("property_get -n $missing")
-	if err == nil || err.Error() != "property_get error 300: can not get property" || raw != xmlProlog+response {
-		t.Fatalf("Raw = %q, %v; want raw XML and the engine error", raw, err)
-	}
-}
-
 func TestAdoptRejectedPendingBreakpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
