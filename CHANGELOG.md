@@ -6,7 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `--listen-addr` chooses the address the DBGp listener binds to, `0.0.0.0` by default, so a laptop can keep the debug port off the network with `--listen-addr 127.0.0.1`. It takes an IP literal, so a name such as `localhost` is rejected instead of binding whichever address it resolves to first (#46)
+
+### Changed
+- The port-conflict check compares the address the DBGp listener binds to with the address lsof reports for the holder, so a debugger listening on another address is no longer reported as holding the port (#46)
+
+## [0.3.0] - 2026-10-07
+
 ### Fixed
+- MCP `tools/call` requests now run concurrently and DBGp replies are routed to the right command by `transaction_id` through a per-connection reader goroutine. `xdbg_pause` can now interrupt a running `xdbg_run`, and `status`, `stop` and `detach` answer while a `run` is pending. When the engine reports `supports_async=0`, `xdbg_pause` returns `engine does not support async break (supports_async=0)` instead of blocking (#25)
+- `run_command` now watches the container command and returns as soon as it exits when no Xdebug connection arrives, reporting the command output and exit status (or that Xdebug is off) instead of waiting for the full timeout and losing the output. A short grace still honours an engine that connects just before the process exits (#58)
 - The DBGp listener now closes as soon as the first Xdebug connection is accepted, so a second Xdebug connection is refused at once instead of hanging in the listen backlog while `adopt()` runs a breakpoint-free script to completion. This no longer delays an unrelated PHP request by the full runtime of the first script (#34)
 - DBGp replies are now matched by root element and `transaction_id` instead of taking the next packet. `<stream>`, `<notify>` and non-matching `<response>` packets are skipped (and logged), so an unsolicited or injected reply can no longer desync the session (#33)
 - A client error racing Xdebug's `Accept` now cancels an accepted connection that has not yet been reported, preventing an orphan paused session from blocking later requests (#95)

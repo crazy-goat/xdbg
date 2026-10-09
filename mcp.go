@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -109,15 +110,29 @@ func newMCP(s *session) *mcpServer {
 
 func (m *mcpServer) serve() { m.serveIO(os.Stdin, os.Stdout) }
 
-// serveIO runs the JSON-RPC loop: one request per line from in, one response per line to out.
+// serveIO runs the JSON-RPC loop: one request per line from in, one response
+// per line to out. tools/call runs in its own goroutine so a blocking debug
+// command (run) cannot stop the loop from reading the next request (pause,
+// status, stop, detach). Response writes are serialized so lines never
+// interleave. It returns after EOF, once every in-flight call has finished.
 func (m *mcpServer) serveIO(in io.Reader, w io.Writer) {
 	rd := bufio.NewReaderSize(in, 1<<20)
 	out := json.NewEncoder(w)
+	var outMu sync.Mutex
+	write := func(resp *rpcResp) {
+		outMu.Lock()
+		defer outMu.Unlock()
+		// Encode appends the newline. The client may be gone; there is nobody
+		// to tell, so log.
+		if err := out.Encode(resp); err != nil {
+			log.Printf("write response: %v", err)
+		}
+	}
+	var wg sync.WaitGroup
 	for {
 		line, err := rd.ReadBytes('\n')
 		if len(bytes.TrimSpace(line)) > 0 {
 			var req rpcReq
-			var resp *rpcResp
 			if uerr := json.Unmarshal(line, &req); uerr != nil {
 				// No usable id: JSON-RPC 2.0 wants a null id. Syntax errors are parse
 				// errors; valid JSON of the wrong shape is an invalid request.
@@ -126,23 +141,28 @@ func (m *mcpServer) serveIO(in io.Reader, w io.Writer) {
 					code, msg = -32600, "invalid request: "
 				}
 				log.Printf("%s%v", msg, uerr)
-				resp = &rpcResp{JSONRPC: "2.0", Error: &rpcErr{Code: code, Message: msg + uerr.Error()}}
+				write(&rpcResp{JSONRPC: "2.0", Error: &rpcErr{Code: code, Message: msg + uerr.Error()}})
 			} else if req.Method == "" {
 				// Valid JSON that decodes to a request without a method, e.g. `{}` or `null`.
 				// Without this check it would pass for a notification and get no reply.
 				log.Printf("invalid request: missing method")
-				resp = &rpcResp{JSONRPC: "2.0", ID: req.ID, Error: &rpcErr{Code: -32600, Message: "invalid request: missing method"}}
+				write(&rpcResp{JSONRPC: "2.0", ID: req.ID, Error: &rpcErr{Code: -32600, Message: "invalid request: missing method"}})
+			} else if req.Method == "tools/call" && len(req.ID) != 0 {
+				wg.Add(1)
+				go func(req rpcReq) {
+					defer wg.Done()
+					if resp := m.handle(req); resp != nil {
+						write(resp)
+					}
+				}(req)
 			} else {
-				resp = m.handle(req)
-			}
-			if resp != nil {
-				// Encode appends the newline. The client may be gone; there is nobody to tell, so log.
-				if err := out.Encode(resp); err != nil {
-					log.Printf("write response: %v", err)
+				if resp := m.handle(req); resp != nil {
+					write(resp)
 				}
 			}
 		}
 		if err != nil {
+			wg.Wait()
 			return
 		}
 	}

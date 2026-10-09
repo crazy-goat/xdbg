@@ -220,6 +220,11 @@ Property names must not contain NUL bytes.
 | *"What's in $user here?"* | `context` or `property_get('$user')` or `eval('$user->getRoles()')` |
 | *"Step into this function"* | `step_into` |
 | *"Let it run to the next breakpoint"* | `run` |
+| *"Run until this function returns"* | `step_out` |
+| *"Set $limit to 5 and go on"* | `property_set('$limit', '5')` → `run` |
+| *"It is stuck in a loop, stop there"* | `pause` (it cannot interrupt a running `run` yet, see #25) |
+| *"Remove that breakpoint"* | `breakpoint_list` → `breakpoint_remove('<id>')` |
+| *"Remove all breakpoints"* | `breakpoint_clear` |
 | *"I'm done debugging"* | `detach` or `stop` → `container_disable` (optional) |
 | *"Why didn't it break?"* | Check `container_status`, `breakpoint_list`, verify file path and line number. Try `listen` + manual launch to test connectivity. |
 | *"The port is busy"* | Ask user to close PhpStorm/browser debugger, or run `lsof -i :9003` and kill the process. |

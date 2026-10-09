@@ -520,7 +520,7 @@ func servePausedRequestTestEngine(addr string, connReady chan<- net.Conn) error 
 		return fmt.Errorf("engine init: %w", err)
 	}
 	r := bufio.NewReader(conn)
-	for _, want := range []string{"feature_set", "feature_set", "feature_set", "breakpoint_set", "run", "stop"} {
+	for _, want := range []string{"feature_set", "feature_set", "feature_set", "feature_get", "breakpoint_set", "run", "stop"} {
 		command, err := r.ReadString(0)
 		if err != nil {
 			return fmt.Errorf("engine read %s: %w", want, err)

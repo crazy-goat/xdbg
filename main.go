@@ -9,7 +9,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"net"
 	"os"
 	"regexp"
 	"runtime/debug"
@@ -78,6 +80,7 @@ func main() {
 func newRootCmd() *cobra.Command {
 	var (
 		dbgPort          string
+		listenAddr       string
 		localRoot        string
 		dockerRoot       string
 		xdebugEnableCmd  string
@@ -90,8 +93,10 @@ func newRootCmd() *cobra.Command {
 		Use:   "mcp",
 		Short: "Run as MCP stdio server (default command)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s := newSession(localRoot, dockerRoot)
-			s.dbgAddr = "0.0.0.0:" + dbgPort
+			s, err := mcpSession(listenAddr, dbgPort, localRoot, dockerRoot)
+			if err != nil {
+				return err
+			}
 			s.enableCmd = xdebugEnableCmd
 			s.disableCmd = xdebugDisableCmd
 			s.statusCmd = xdebugStatusCmd
@@ -116,6 +121,7 @@ func newRootCmd() *cobra.Command {
 
 	f := root.PersistentFlags()
 	f.StringVar(&dbgPort, "dbg-port", "9003", "DBGp listen port (where container Xdebug connects)")
+	f.StringVar(&listenAddr, "listen-addr", "0.0.0.0", "address the DBGp listener binds to, as an IP literal")
 	f.StringVar(&localRoot, "local-root", getwdDefault(), "host project root (defaults to CWD)")
 	f.StringVar(&dockerRoot, "docker-root", "", "container project root (default empty: no path translation; relative paths use local-root)")
 	f.StringVar(&xdebugEnableCmd, "xdebug-enable-cmd", "", `shell command to enable Xdebug in the container, e.g. "docker compose exec -T php set-xdebug-on"`)
@@ -124,4 +130,28 @@ func newRootCmd() *cobra.Command {
 	f.StringVar(&containerExec, "container-exec", "docker compose exec -T php", "prefix for running commands in the container")
 
 	return root
+}
+
+// mcpSession builds the session the mcp command runs with. The listen address
+// the flags carry becomes the session's bind address here, in one place a test
+// can observe without starting the server.
+func mcpSession(listenAddr, dbgPort, localRoot, dockerRoot string) (*session, error) {
+	addr, err := dbgListenAddr(listenAddr, dbgPort)
+	if err != nil {
+		return nil, err
+	}
+	s := newSession(localRoot, dockerRoot)
+	s.dbgAddr = addr
+	return s, nil
+}
+
+// dbgListenAddr validates the --listen-addr value and joins it with the DBGp
+// port. Only an IP literal is accepted: a name such as "localhost" resolves to
+// ::1 before 127.0.0.1 on some hosts, so the listener would bind an address the
+// caller did not write. JoinHostPort adds the brackets an IPv6 literal needs.
+func dbgListenAddr(listenAddr, dbgPort string) (string, error) {
+	if net.ParseIP(listenAddr) == nil {
+		return "", fmt.Errorf("invalid --listen-addr %q: must be an IP address", listenAddr)
+	}
+	return net.JoinHostPort(listenAddr, dbgPort), nil
 }

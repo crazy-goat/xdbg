@@ -174,7 +174,8 @@ adapted to your client's MCP configuration format.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--dbg-port` | `9003` | Port Xdebug connects to (the listener binds `0.0.0.0:<port>`) |
+| `--dbg-port` | `9003` | Port Xdebug connects to (the listener binds `<listen-addr>:<port>`) |
+| `--listen-addr` | `0.0.0.0` | Address the DBGp listener binds to, as an IP literal (e.g. `127.0.0.1`, `172.17.0.1`, `::1`) |
 | `--local-root` | — | Host project root — used for host-to-container path translation |
 | `--docker-root` | — | Container project root — used for container-to-host path translation |
 | `--xdebug-enable-cmd` | — | Shell command to enable Xdebug in the container |
@@ -242,5 +243,6 @@ curl -o ~/.config/opencode/skills/xdbg/SKILL.md \
 |---|---|
 | `xdbg: command not found` | Ensure `$(go env GOPATH)/bin` or `~/.local/bin` is on your `PATH` |
 | Port 9003 already in use | Another debugger or xdbg instance is holding it. Kill it or use `--dbg-port` with a different port |
+| `--listen-addr 127.0.0.1` and Xdebug never connects | Loopback only works where the container reaches the host's loopback (Colima on macOS). With native Docker on Linux the container connects from the bridge network (`172.17.0.x`), so use `0.0.0.0` or the bridge address (`172.17.0.1`) |
 | Xdebug doesn't connect | Verify `xdebug.client_host=host.docker.internal` in the container and that port 9003 is not blocked by a firewall |
 | Tools don't appear in agent | Reconnect/restart the MCP client. Check that the `command` path resolves correctly |

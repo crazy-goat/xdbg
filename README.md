@@ -34,7 +34,7 @@ plus CLI/Symfony command debugging and host↔container path translation.
 | **Auth / cookies / JWT** | Nowhere to put the header | Pass `headers: {"Authorization": "Bearer …"}` (or read from a file to keep secrets out of the chat) |
 | **CLI / Symfony commands** | No MCP path at all | `xdbg_run_command "bin/console app:foo"` pauses at the breakpoint |
 | **Host ↔ container paths** | Breakpoints need container paths; stacks show container paths | Set breakpoints with host paths; stacks come back as host paths |
-| **Port conflicts** | Two debuggers fight over 9003 | Detects the holder (lsof), waits up to 10 s for its turn, then tells you who's blocking |
+| **Port conflicts** | Two debuggers fight over 9003 | Detects a holder on the same address (lsof), waits up to 10 s for its turn, then tells you who's blocking |
 | **Port 9003 always busy** | Debugger holds the port all session | Binds only during a tool call (`xdbg_request`, `xdbg_run_command`, `xdbg_listen`); releases immediately after — PhpStorm, browser Xdebug, and other tools work freely between calls |
 
 ## How it works (30-second version)
@@ -42,7 +42,7 @@ plus CLI/Symfony command debugging and host↔container path translation.
 1. The container's Xdebug is a DBGp *engine*. With
    `xdebug.start_with_request=yes` it dials **out** to
    `host.docker.internal:9003` on every request and waits for commands.
-2. `xdbg` listens on `0.0.0.0:9003` and drives the engine — set breakpoints,
+2. `xdbg` listens on `<listen-addr>:9003` (default `0.0.0.0`) and drives the engine — set breakpoints,
    step, eval, read the stack.
 3. The MCP server is one long-lived process, so the session survives across
    tool calls. Your agent sets a breakpoint, fires the request, inspects
@@ -185,13 +185,21 @@ Reconnect MCP in Claude Code. Tools appear as `mcp__xdbg__*`.
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--dbg-port` | `9003` | Port Xdebug dials into (the listener binds `0.0.0.0:<port>`) |
+| `--dbg-port` | `9003` | Port Xdebug dials into (the listener binds `<listen-addr>:<port>`) |
+| `--listen-addr` | `0.0.0.0` | Address the DBGp listener binds to, as an IP literal (e.g. `127.0.0.1`, `172.17.0.1`, `::1`) |
 | `--local-root` | — | Host project root (for path translation) |
 | `--docker-root` | `""` (empty) | Container project root; empty disables path translation (host and container paths are the same) |
 | `--xdebug-enable-cmd` | — | Shell command to enable Xdebug in the container |
 | `--xdebug-disable-cmd` | — | Shell command to disable Xdebug in the container |
 | `--xdebug-status-cmd` | — | Shell command to check Xdebug status in the container |
 | `--container-exec` | `docker compose exec -T php` | Prefix for running CLI commands inside the container |
+
+`--listen-addr 127.0.0.1` keeps the debug port off the network. It works with Colima on macOS, where
+the container reaches the host's loopback (Docker Desktop was not tested). It does **not** work with
+native Docker on Linux: the container connects from the bridge network (`172.17.0.x`), so a
+loopback-only listener never receives it — use `0.0.0.0` there, or the bridge address
+(`172.17.0.1`). The container has to dial the address you bind: a debugger on another address is not
+a conflict, so a mismatch shows up as no engine connecting rather than as a busy port.
 
 ### Path translation
 
@@ -328,8 +336,10 @@ with `--container-exec`) and waits for the resulting Xdebug connection. When
 no breakpoints are set, the script runs to completion and the command output
 is returned. When breakpoints are set, the session pauses at the first break
 and the caller drives it with `xdbg_run` / `xdbg_step_*` — the command output
-is not available until the script finishes. This is the CLI equivalent of
-`xdbg_request`.
+is not available until the script finishes. If the command exits before Xdebug
+connects (a bad service, a typo, or Xdebug off in the container), it returns
+promptly with the command output and exit status instead of waiting for
+`timeoutMs`. This is the CLI equivalent of `xdbg_request`.
 
 ### `xdbg_run()`
 Resumes execution after a break — the engine runs until the next breakpoint
@@ -359,7 +369,11 @@ location. Use it to escape a function you stepped into by mistake.
 Breaks (pauses) execution immediately, as if a breakpoint were hit at the
 current line. Returns the new state (`break`) and location. Use it to
 interrupt a long-running `xdbg_run` and regain control. Only meaningful while
-a session is active and running.
+a session is active and running. MCP calls are handled concurrently, so
+`xdbg_status`, `xdbg_stop` and `xdbg_detach` also answer while an `xdbg_run`
+is still pending. Interrupting a running script needs an engine that supports
+asynchronous `break`; when Xdebug reported `supports_async=0`, `xdbg_pause`
+returns `engine does not support async break (supports_async=0)`.
 
 ### `xdbg_stack()`
 Returns the call stack at the current pause point, with each frame's depth,
