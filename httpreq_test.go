@@ -156,6 +156,178 @@ func serveRequestTestEngine(addr string) error {
 	}
 }
 
+type seenRequest struct {
+	method string
+	body   string
+	header http.Header
+}
+
+// newAppServer records the HTTP request and connects a fake Xdebug engine to the
+// session's DBGp listener, as a PHP app would.
+func newAppServer(t *testing.T, s *session) (*httptest.Server, <-chan seenRequest) {
+	t.Helper()
+	seen := make(chan seenRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		seen <- seenRequest{method: r.Method, body: string(body), header: r.Header.Clone()}
+
+		addr := listenerAddr(s)
+		if addr == "" {
+			t.Errorf("DBGp listener is not open")
+			return
+		}
+		if err := dialCommandEngine(addr); err != nil {
+			t.Errorf("engine: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, seen
+}
+
+func newHTTPSession() *session {
+	s := newSession("/l", "/d")
+	s.dbgAddr = "127.0.0.1:0"
+	return s
+}
+
+func TestDoRequestSendsMethodHeadersBody(t *testing.T) {
+	s := newHTTPSession()
+	server, seen := newAppServer(t, s)
+	out, err := s.DoRequest(server.URL+"/api", "post", map[string]string{
+		"X-Token":      "abc",
+		"Content-Type": "application/json",
+	}, `{"a":1}`, 5*time.Second)
+	if err != nil || out != "request fired; script ran to completion" {
+		t.Fatalf("DoRequest() = %q, %v", out, err)
+	}
+	request := <-seen
+	if request.method != "POST" || request.body != `{"a":1}` || request.header.Get("X-Token") != "abc" || request.header.Get("Content-Type") != "application/json" {
+		t.Fatalf("app got %+v", request)
+	}
+}
+
+func TestDoRequestDefaultsToGET(t *testing.T) {
+	s := newHTTPSession()
+	server, seen := newAppServer(t, s)
+	if _, err := s.DoRequest(server.URL, "", nil, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if request := <-seen; request.method != "GET" || request.body != "" {
+		t.Fatalf("app got %+v", request)
+	}
+}
+
+func TestDoRequestPausedWithBreakpoints(t *testing.T) {
+	s := newHTTPSession()
+	s.pending = []bp{{file: "/d/index.php", line: 3}}
+	server, _ := newAppServer(t, s)
+	t.Cleanup(func() {
+		if _, err := s.Detach(); err != nil {
+			t.Errorf("cleanup detach: %v", err)
+		}
+	})
+	out, err := s.DoRequest(server.URL, "GET", nil, "", 5*time.Second)
+	if err != nil || out != "request fired; session paused at script start — call run/step to drive" {
+		t.Fatalf("DoRequest() = %q, %v", out, err)
+	}
+	if s.pending[0].id != "1" {
+		t.Fatalf("pending breakpoint not applied: %+v", s.pending)
+	}
+	if _, err := s.Detach(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDoRequestValidation(t *testing.T) {
+	s := newHTTPSession()
+	if _, err := s.DoRequest("", "GET", nil, "", time.Second); err == nil || err.Error() != "url required" {
+		t.Errorf("empty URL: err = %v", err)
+	}
+	if _, err := s.DoRequest("http://127.0.0.1/", "BAD METHOD", nil, "", time.Second); err == nil || !strings.Contains(err.Error(), "request build") {
+		t.Errorf("bad method: err = %v", err)
+	}
+	if _, err := s.DoRequest("http://[::1", "GET", nil, "", time.Second); err == nil || !strings.Contains(err.Error(), "request build") {
+		t.Errorf("bad URL: err = %v", err)
+	}
+	if listenerAddr(s) != "" {
+		t.Fatal("validation errors must not open the DBGp listener")
+	}
+}
+
+func TestDoRequestNoXdebugTimeout(t *testing.T) {
+	s := newHTTPSession()
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	start := time.Now()
+	_, err := s.DoRequest(server.URL, "GET", nil, "", 300*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "no Xdebug connection within 300ms") {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("DoRequest took %s", elapsed)
+	}
+	if listenerAddr(s) != "" {
+		t.Fatal("the listener must be closed after the timeout")
+	}
+}
+
+func TestDoRequestFromFilesSendsBodyAndHeaders(t *testing.T) {
+	dir := t.TempDir()
+	headersFile := filepath.Join(dir, "headers.txt")
+	bodyFile := filepath.Join(dir, "body.bin")
+	if err := os.WriteFile(headersFile, []byte("# secret\nAuthorization: Bearer t0k\n\nX-A: 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bodyFile, []byte("raw\x00body"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newHTTPSession()
+	server, seen := newAppServer(t, s)
+	out, err := s.DoRequestFromFiles(server.URL, "put", headersFile, bodyFile, 5*time.Second)
+	if err != nil || out != "request fired; script ran to completion" {
+		t.Fatalf("DoRequestFromFiles() = %q, %v", out, err)
+	}
+	request := <-seen
+	if request.method != "PUT" || request.body != "raw\x00body" || request.header.Get("Authorization") != "Bearer t0k" || request.header.Get("X-A") != "1" {
+		t.Fatalf("app got %+v", request)
+	}
+}
+
+func TestDoRequestFromFilesErrors(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing")
+	badHeaders := filepath.Join(dir, "bad-headers.txt")
+	if err := os.WriteFile(badHeaders, []byte("no colon here\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newHTTPSession()
+	for _, tc := range []struct {
+		name, url, headersFile, bodyFile, want string
+	}{
+		{"empty URL", "", "", "", "url required"},
+		{"missing body file", "http://127.0.0.1/", "", missing, "body_file:"},
+		{"missing headers file", "http://127.0.0.1/", missing, "", "headers_file:"},
+		{"invalid headers file", "http://127.0.0.1/", badHeaders, "", "headers_file parse:"},
+		{"bad URL", "http://[::1", "", "", "request build"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.DoRequestFromFiles(tc.url, "", tc.headersFile, tc.bodyFile, time.Second); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("DoRequestFromFiles error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	if listenerAddr(s) != "" {
+		t.Fatal("validation errors must not open the DBGp listener")
+	}
+}
+
 func TestDoRequest_HostHeader(t *testing.T) {
 	for _, tc := range []struct {
 		name, headerName, fileData string
