@@ -41,6 +41,7 @@ Fpm -> Script: execute FooController::bar()
 Script -> Xdebug: Xdebug hooks fire
 Xdebug -> Listener: dial out\nhost.docker.internal:9003
 Listener -> Core: adopt connection
+Core -> Listener: close :9003\n(right after first accept)
 Core -> Xdebug: apply breakpoints\nbreakpoint_set FooController.php:42
 Core -> Xdebug: run
 Xdebug -> Core: break at FooController.php:42
@@ -82,7 +83,6 @@ Core --> Agent: script finished
 Agent -> MCP: xdbg_detach()
 MCP -> Core: dispatch
 Core -> Xdebug: detach
-Core -> Listener: close :9003
 Core --> Agent: detached
 
 Agent -> MCP: xdbg_container_disable()

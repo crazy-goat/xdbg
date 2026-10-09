@@ -35,7 +35,7 @@ plus CLI/Symfony command debugging and host↔container path translation.
 | **CLI / Symfony commands** | No MCP path at all | `xdbg_run_command "bin/console app:foo"` pauses at the breakpoint |
 | **Host ↔ container paths** | Breakpoints need container paths; stacks show container paths | Set breakpoints with host paths; stacks come back as host paths |
 | **Port conflicts** | Two debuggers fight over 9003 | Detects a holder on the same address (lsof), waits up to 10 s for its turn, then tells you who's blocking |
-| **Port 9003 always busy** | Debugger holds the port all session | Binds only during a tool call (`xdbg_request`, `xdbg_run_command`, `xdbg_listen`); releases immediately after — PhpStorm, browser Xdebug, and other tools work freely between calls |
+| **Port 9003 always busy** | Debugger holds the port all session | Binds only during a tool call (`xdbg_request`, `xdbg_run_command`, `xdbg_listen`); releases as soon as Xdebug connects — PhpStorm, browser Xdebug, and other tools work freely between calls |
 
 ## How it works (30-second version)
 

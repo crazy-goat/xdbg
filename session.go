@@ -1393,7 +1393,7 @@ func (s *session) ListenWait(timeout time.Duration) (string, error) {
 // later to see if a session was adopted.
 func (s *session) ListenFireForget() (string, error) {
 	// We don't know the accept timeout here — use a long default (1h) so the
-	// listener stays open. It'll be closed when adopt() runs.
+	// listener stays open. It is closed right after the first accept, before adopt() runs.
 	if _, err := s.openOnce(time.Hour, 10*time.Second); err != nil {
 		return "", err
 	}

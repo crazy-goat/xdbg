@@ -31,7 +31,7 @@ Always start with these checks. If container toggling is not configured, skip st
 1. **`container_status`** — is Xdebug enabled in the container?
 2. If off: **`container_enable`**
 3. **`status`** — is there a stale session from a previous debug run?
-4. If stale: **`detach`** or **`stop`** to free port 9003.
+4. If stale: **`detach`** or **`stop`** to end the DBGp session/connection. (Port 9003 is already freed as soon as Xdebug connects.)
 
 > **Why this matters:** Xdebug in the container must have `xdebug.mode=debug` and `xdebug.start_with_request=yes` so the engine dials out to port 9003. If Xdebug is off, the request/command runs to completion with no debug connection.
 
