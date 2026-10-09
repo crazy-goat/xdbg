@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// dialEngine plays Xdebug over TCP: it dials addr, sends <init>, then answers
+// dialCommandEngine plays Xdebug over TCP: it dials addr, sends <init>, then answers
 // each command. `run` gets status="stopping", every other command a plain
 // response. It returns when the debugger closes the connection.
 func dialCommandEngine(addr string) error {
