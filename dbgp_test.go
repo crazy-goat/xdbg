@@ -293,3 +293,43 @@ func TestSummarizeTruncatesLongUTF8Value(t *testing.T) {
 		t.Fatalf("summarize = %q, want %q", got, want)
 	}
 }
+
+// --- lenient numchildren attribute (issue #100) -------------------------------
+
+func TestUnmarshalMalformedNumChildren(t *testing.T) {
+	for _, tc := range []struct{ name, xml, want string }{
+		{
+			"malformed numchildren",
+			`<property name="$arr" type="array" children="1" numchildren="abc">` +
+				`<property name="0" type="int"><![CDATA[1]]></property>` +
+				`<property name="1" type="int"><![CDATA[2]]></property>` +
+				`</property>`,
+			"array {2 children}",
+		},
+		{
+			"negative numchildren",
+			`<property name="$arr" type="array" children="1" numchildren="-5">` +
+				`<property name="0" type="int"><![CDATA[1]]></property>` +
+				`</property>`,
+			"array {1 children}",
+		},
+		{
+			"overflowing numchildren",
+			`<property name="$arr" type="array" children="1" numchildren="99999999999999999999999"></property>`,
+			"array {0 children}",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var r xResp
+			if err := unmarshal(xmlProlog+`<response command="context_get" status="break">`+tc.xml+`</response>`, &r); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(r.Props) != 1 {
+				t.Fatalf("props = %+v, want exactly one", r.Props)
+			}
+			if got := summarize(r.Props[0]); got != tc.want {
+				t.Fatalf("summarize = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
