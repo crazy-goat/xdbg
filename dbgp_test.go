@@ -297,26 +297,36 @@ func TestSummarizeTruncatesLongUTF8Value(t *testing.T) {
 // --- lenient numchildren attribute (issue #100) -------------------------------
 
 func TestUnmarshalMalformedNumChildren(t *testing.T) {
-	for _, tc := range []struct{ name, xml, want string }{
+	for _, tc := range []struct {
+		name, xml, want string
+		wantNum         int
+	}{
 		{
 			"malformed numchildren",
 			`<property name="$arr" type="array" children="1" numchildren="abc">` +
 				`<property name="0" type="int"><![CDATA[1]]></property>` +
 				`<property name="1" type="int"><![CDATA[2]]></property>` +
 				`</property>`,
-			"array {2 children}",
+			"array {2 children}", 0,
 		},
 		{
 			"negative numchildren",
 			`<property name="$arr" type="array" children="1" numchildren="-5">` +
 				`<property name="0" type="int"><![CDATA[1]]></property>` +
 				`</property>`,
-			"array {1 children}",
+			"array {1 children}", 0,
 		},
 		{
 			"overflowing numchildren",
 			`<property name="$arr" type="array" children="1" numchildren="99999999999999999999999"></property>`,
-			"array {0 children}",
+			"array {0 children}", 0,
+		},
+		{
+			"space-padded numchildren",
+			`<property name="$arr" type="array" children="1" numchildren=" 5 ">` +
+				`<property name="0" type="int"><![CDATA[1]]></property>` +
+				`</property>`,
+			"array {5 children}", 5,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -330,6 +340,31 @@ func TestUnmarshalMalformedNumChildren(t *testing.T) {
 			if got := summarize(r.Props[0]); got != tc.want {
 				t.Fatalf("summarize = %q, want %q", got, tc.want)
 			}
+			if got := r.Props[0].NumChildren; got != tc.wantNum {
+				t.Fatalf("NumChildren = %d, want %d", got, tc.wantNum)
+			}
 		})
+	}
+}
+
+func TestUnmarshalMalformedNumChildrenNested(t *testing.T) {
+	var r xResp
+	x := `<property name="$outer" type="array" children="1" numchildren="1">` +
+		`<property name="inner" type="array" children="1" numchildren="abc">` +
+		`<property name="0" type="int"><![CDATA[1]]></property>` +
+		`<property name="1" type="int"><![CDATA[2]]></property>` +
+		`</property>` +
+		`</property>`
+	if err := unmarshal(xmlProlog+`<response command="property_get" status="break">`+x+`</response>`, &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(r.Props) != 1 || len(r.Props[0].Children) != 1 {
+		t.Fatalf("props = %+v, want one outer property with one child", r.Props)
+	}
+	if got, want := summarize(r.Props[0]), "array {1 children}"; got != want {
+		t.Fatalf("outer summarize = %q, want %q", got, want)
+	}
+	if got, want := summarize(r.Props[0].Children[0]), "array {2 children}"; got != want {
+		t.Fatalf("inner summarize = %q, want %q", got, want)
 	}
 }

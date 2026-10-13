@@ -62,8 +62,10 @@ type xProp struct {
 	Children    []xProp `xml:"property"`
 }
 
-// UnmarshalXMLAttr decodes the numchildren attribute leniently: a malformed or
-// out-of-range value falls back to 0 instead of failing the whole response, and
+// UnmarshalXMLAttr decodes the numchildren attribute leniently: surrounding
+// spaces are trimmed as encoding/xml does for int fields, and a malformed,
+// negative or out-of-range value falls back to 0 instead of failing the whole
+// response, and
 // summarize then reports len(p.Children). Real Xdebug always emits a valid
 // integer, but other engines occasionally do not (issue #100). UnmarshalXML
 // calls it for every attribute of a property element.
@@ -71,8 +73,8 @@ func (p *xProp) UnmarshalXMLAttr(attr xml.Attr) error {
 	if attr.Name.Local != "numchildren" {
 		return nil
 	}
-	n, err := strconv.Atoi(attr.Value)
-	if err != nil {
+	n, err := strconv.Atoi(strings.TrimSpace(attr.Value))
+	if err != nil || n < 0 {
 		return nil
 	}
 	p.NumChildren = n
