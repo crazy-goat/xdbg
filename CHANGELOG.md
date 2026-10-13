@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - The port-conflict check compares the address the DBGp listener binds to with the address lsof reports for the holder, so a debugger listening on another address is no longer reported as holding the port (#46)
 
+### Fixed
+- A malformed or out-of-range `numchildren` attribute in a DBGp `property` element no longer fails the whole response with `parse <cmd> response`. The value falls back to the number of child elements that were received (#100)
+
 ## [0.3.0] - 2026-10-07
 
 ### Fixed

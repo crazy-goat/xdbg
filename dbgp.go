@@ -65,7 +65,8 @@ type xProp struct {
 // UnmarshalXMLAttr decodes the numchildren attribute leniently: a malformed or
 // out-of-range value falls back to 0 instead of failing the whole response, and
 // summarize then reports len(p.Children). Real Xdebug always emits a valid
-// integer, but other engines occasionally do not (issue #100).
+// integer, but other engines occasionally do not (issue #100). UnmarshalXML
+// calls it for every attribute of a property element.
 func (p *xProp) UnmarshalXMLAttr(attr xml.Attr) error {
 	if attr.Name.Local != "numchildren" {
 		return nil
@@ -78,10 +79,12 @@ func (p *xProp) UnmarshalXMLAttr(attr xml.Attr) error {
 	return nil
 }
 
-// UnmarshalXML implements xml.Unmarshaler so the lenient numchildren decoding
-// above also applies to nested property elements: encoding/xml only consults
-// UnmarshalXMLAttr for attributes it binds through the struct's own fields, and
-// a type-level UnmarshalXMLAttr makes xProp's int fields opaque to the decoder.
+// UnmarshalXML implements xml.Unmarshaler, so encoding/xml calls it for every
+// property element, nested ones included (Children is []xProp). It decodes the
+// other fields through a local struct without numchildren, so the decoder never
+// parses that attribute as an int, and it takes NumChildren from
+// UnmarshalXMLAttr. A plain DecodeElement into xProp would call UnmarshalXML
+// again and recurse.
 func (p *xProp) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	for _, attr := range start.Attr {
 		if err := p.UnmarshalXMLAttr(attr); err != nil {
