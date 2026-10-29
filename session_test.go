@@ -1246,6 +1246,29 @@ func TestAdoptMalformedInit(t *testing.T) {
 	}
 }
 
+func TestAdoptNonInitFirstPacket(t *testing.T) {
+	eng, conn := newPipe(t)
+	s := newSession("/l", "/d")
+	ready := s.ready
+	eng.drain()
+	go eng.send(xmlProlog + `<response command="status" transaction_id="1" status="break"/>`)
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	s.adopt(conn)
+
+	if s.state != "no session" || s.conn != nil {
+		t.Fatalf("state = %q, conn nil = %v", s.state, s.conn == nil)
+	}
+	select {
+	case <-ready:
+	default:
+		t.Fatal("a failed handshake must wake the waiters")
+	}
+	if err := s.handshakeError(); err == nil || !strings.Contains(err.Error(), "parse init") {
+		t.Fatalf("handshakeError = %v, want a parse init error", err)
+	}
+}
+
 func TestAdoptTruncatedInitPacket(t *testing.T) {
 	eng, conn := newPipe(t)
 	s := newSession("/l", "/d")

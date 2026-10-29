@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -457,10 +458,15 @@ func (s *session) adoptLocked(conn net.Conn) {
 		return
 	}
 	var ir struct {
+		XMLName xml.Name
 		Fileuri string `xml:"fileuri,attr"`
 	}
 	if err := unmarshal(initXML, &ir); err != nil {
 		s.failHandshakeLocked("parse init", err)
+		return
+	}
+	if ir.XMLName.Local != "init" {
+		s.failHandshakeLocked("parse init", fmt.Errorf("unexpected DBGp packet <%s>", ir.XMLName.Local))
 		return
 	}
 	s.state = "started"
