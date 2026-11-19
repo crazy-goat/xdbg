@@ -203,6 +203,15 @@ func TestDecodeValBase64(t *testing.T) {
 	}
 }
 
+func TestDecodeValBase64KeepsWhitespace(t *testing.T) {
+	for _, want := range []string{"  x", "x  ", "  x  ", "   "} {
+		p := xProp{Type: "string", Encoding: "base64", Value: base64.StdEncoding.EncodeToString([]byte(want))}
+		if got := decodeVal(p); got != want {
+			t.Fatalf("decodeVal = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestDecodeValInvalidBase64FallsBack(t *testing.T) {
 	p := xProp{Type: "string", Encoding: "base64", Value: "not base64!"}
 	if got := decodeVal(p); got != "not base64!" {
