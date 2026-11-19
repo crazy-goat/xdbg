@@ -136,13 +136,12 @@ func unmarshal(data string, v any) error {
 
 // decodeVal returns a property's value, base64-decoded when needed.
 func decodeVal(p xProp) string {
-	v := p.Value
 	if p.Encoding == "base64" {
 		if dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(p.Value)); err == nil {
-			v = string(dec)
+			return string(dec)
 		}
 	}
-	return strings.TrimSpace(v)
+	return strings.TrimSpace(p.Value)
 }
 
 // summarize renders a property as one readable line.
